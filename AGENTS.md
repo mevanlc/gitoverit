@@ -6,7 +6,7 @@
   - `collect_reports()` – orchestrates repository discovery, analysis, and invokes optional progress hooks.
   - `RepoReport` dataclass – canonical representation of a repo’s status; renderers and tests consume this.
   - Utility functions like `parse_status_porcelain`, `simplify_url`, `latest_worktree_mtime`, etc., are here.
-- Progress hooks are defined in `src/gitoverit/progress.py`. `RichProgressHook` implements the interactive progress bar; use `dispatch_hook()` to safely invoke hooks.
+- Progress hooks are defined in `src/gitoverit/progress.py`. `RichHook` implements the interactive progress bar; use `dispatch_hook()` to safely invoke `HookProtocol` methods (return `HookReturn.STOP` to halt early).
 - Output formatting is split under `src/gitoverit/output/`:
   - `table.py` renders Rich tables via `render_table(console, reports)`.
   - `json.py` exposes `render_json(reports)` returning a JSON string.

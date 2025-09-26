@@ -10,7 +10,7 @@ import typer
 from rich.console import Console
 
 from .output import render_json, render_table
-from .progress import RichProgressHook
+from .progress import RichHook
 from .reporting import RepoReport, collect_reports
 
 console = Console()
@@ -61,7 +61,7 @@ def cli(
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
 
-    hook = RichProgressHook(console) if _stdout_is_tty() else None
+    hook = RichHook(console) if _stdout_is_tty() else None
     reports = collect_reports(dirs, fetch=fetch, dirty_only=dirty_only, hook=hook)
 
     _sort_reports(reports, sort=sort, reverse=reverse)

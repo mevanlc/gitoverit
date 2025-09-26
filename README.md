@@ -14,4 +14,6 @@ gitoverit [OPTIONS] <DIRS...>
 - `--sort {mtime,author,none}` &mdash; sort by newest modification time (default), committer ident, or disable sorting.
 - `--reverse` &mdash; flip the selected sort order.
 
+Progress output uses Rich when run in a TTY. Implement the `HookProtocol` in `src/gitoverit/progress.py` and return `HookReturn.STOP` to halt discovery/collection early if you need a custom reporter.
+
 When no arguments are supplied the help text is shown (instead of running against the current directory). Use `-h` or `--help` for the usage synopsis.

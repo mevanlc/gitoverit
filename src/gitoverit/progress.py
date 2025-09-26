@@ -16,22 +16,22 @@ from rich.progress import (
 )
 
 
-class HookReturnAction(str, Enum):
+class HookReturn(str, Enum):
     CONTINUE = "continue"
     STOP = "stop"
 
 
-class ProgressHookProtocol(Protocol):
-    def discovering(self, path: Path) -> HookReturnAction | None: ...
+class HookProtocol(Protocol):
+    def discovering(self, path: Path) -> HookReturn | None: ...
 
-    def start_collect(self, total: int) -> HookReturnAction | None: ...
+    def start_collect(self, total: int) -> HookReturn | None: ...
 
-    def collecting(self, index: int, path: Path) -> HookReturnAction | None: ...
+    def collecting(self, index: int, path: Path) -> HookReturn | None: ...
 
-    def done(self) -> HookReturnAction | None: ...
+    def done(self) -> HookReturn | None: ...
 
 
-class RichProgressHook(ProgressHookProtocol):
+class RichHook(HookProtocol):
     def __init__(self, console: Console) -> None:
         self.console = console
         self.progress = Progress(
@@ -51,28 +51,28 @@ class RichProgressHook(ProgressHookProtocol):
         self.gather_task_id: TaskID | None = None
         self.total_to_collect = 0
 
-    def discovering(self, path: Path) -> HookReturnAction:
+    def discovering(self, path: Path) -> HookReturn:
         self.discovered_count += 1
         if self.discovery_task_id is not None:
             description = (
                 f"[cyan]Discovering repositories ({self.discovered_count})"
             )
             self.progress.update(self.discovery_task_id, description=description)
-        return HookReturnAction.CONTINUE
+        return HookReturn.CONTINUE
 
-    def start_collect(self, total: int) -> HookReturnAction:
+    def start_collect(self, total: int) -> HookReturn:
         self.total_to_collect = total
         if self.discovery_task_id is not None:
             self.progress.remove_task(self.discovery_task_id)
             self.discovery_task_id = None
         if total <= 0:
-            return HookReturnAction.CONTINUE
+            return HookReturn.CONTINUE
         self.gather_task_id = self.progress.add_task(
             "[cyan]Gathering status...", total=total
         )
-        return HookReturnAction.CONTINUE
+        return HookReturn.CONTINUE
 
-    def collecting(self, index: int, path: Path) -> HookReturnAction:
+    def collecting(self, index: int, path: Path) -> HookReturn:
         if self.gather_task_id is not None:
             display_name = path.name or str(path)
             description = (
@@ -83,29 +83,29 @@ class RichProgressHook(ProgressHookProtocol):
                 advance=1,
                 description=description,
             )
-        return HookReturnAction.CONTINUE
+        return HookReturn.CONTINUE
 
-    def done(self) -> HookReturnAction:
+    def done(self) -> HookReturn:
         if self.discovery_task_id is not None:
             self.progress.remove_task(self.discovery_task_id)
             self.discovery_task_id = None
         self.progress.__exit__(None, None, None)
-        return HookReturnAction.CONTINUE
+        return HookReturn.CONTINUE
 
 
 def dispatch_hook(
-    hook: ProgressHookProtocol | None, method: str, *args
+    hook: HookProtocol | None, method: str, *args
 ) -> bool:
     if hook is None:
         return False
     handler = getattr(hook, method)
     result = handler(*args)
-    return result is HookReturnAction.STOP
+    return result is HookReturn.STOP
 
 
 __all__ = [
-    "HookReturnAction",
-    "ProgressHookProtocol",
-    "RichProgressHook",
+    "HookReturn",
+    "HookProtocol",
+    "RichHook",
     "dispatch_hook",
 ]

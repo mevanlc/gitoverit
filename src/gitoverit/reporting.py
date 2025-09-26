@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from git import GitCommandError, Repo
 from rich.text import Text
 
-from .progress import ProgressHookProtocol, dispatch_hook
+from .progress import HookProtocol, dispatch_hook
 
 
 @dataclass
@@ -61,7 +61,7 @@ def collect_reports(
     *,
     fetch: bool,
     dirty_only: bool,
-    hook: ProgressHookProtocol | None = None,
+    hook: HookProtocol | None = None,
 ) -> list[RepoReport]:
     reports: list[RepoReport] = []
     repo_paths: list[Path] = []

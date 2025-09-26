@@ -4,7 +4,7 @@ import os
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import List
+from typing import Annotated, List
 
 import typer
 from rich.console import Console
@@ -35,9 +35,9 @@ class SortMode(str, Enum):
 
 @APP.command()
 def cli(
-    dirs: List[Path] = typer.Argument(
+    dirs: Annotated[List[Path], typer.Argument(
         ..., exists=True, file_okay=False, dir_okay=True, writable=False
-    ),
+    )] = [Path.cwd()],
     fetch: bool = typer.Option(
         False, "--fetch", help="Run git fetch --all for each repository before inspection."
     ),

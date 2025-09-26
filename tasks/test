@@ -1,0 +1,8 @@
+#!/bin/bash
+
+python -m unittest discover -s tests "$@"
+
+#!/usr/bin/env python
+#import os, shlex
+#cmd = shlex.split("uv run python -m unittest discover -s tests")
+#os.execvp(cmd[0], cmd[1:])

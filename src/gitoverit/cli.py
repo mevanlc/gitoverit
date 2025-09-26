@@ -413,14 +413,22 @@ def format_remote_urls(repo: Repo, remote_name: str) -> str | None:
     config = repo.config_reader()
     section = f"remote \"{remote_name}\""
     try:
-        fetch_url = config.get_value(section, "url")
+        fetch_value = config.get_value(section, "url")
     except Exception:
         return None
+    if isinstance(fetch_value, str):
+        fetch_url = fetch_value
+    else:
+        fetch_url = str(fetch_value)
     push_url = None
     try:
-        push_url = config.get_value(section, "pushurl")
+        push_value = config.get_value(section, "pushurl")
     except Exception:
-        push_url = None
+        push_value = None
+    if isinstance(push_value, str) or push_value is None:
+        push_url = push_value
+    else:
+        push_url = str(push_value)
     formatted_fetch = simplify_url(fetch_url)
     if not push_url or push_url == fetch_url:
         return formatted_fetch
@@ -572,7 +580,10 @@ def report_to_dict(report: RepoReport) -> dict[str, object]:
 
 
 def latest_worktree_mtime(repo: Repo) -> float | None:
-    worktree = Path(repo.working_tree_dir).resolve()
+    worktree_dir = repo.working_tree_dir
+    if worktree_dir is None:
+        return None
+    worktree = Path(worktree_dir).resolve()
     candidates: set[Path] = {worktree}
 
     def _add_path(rel_path: str) -> None:

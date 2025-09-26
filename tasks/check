@@ -1,0 +1,5 @@
+#!/bin/bash
+
+pyright src
+
+# ruff check src

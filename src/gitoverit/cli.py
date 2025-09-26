@@ -17,6 +17,7 @@ from rich.progress import (
     BarColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TaskProgressColumn,
     TextColumn,
     TimeRemainingColumn,
@@ -72,11 +73,11 @@ class RichProgressHook(ProgressHookProtocol):
             transient=True,
         )
         self.progress.__enter__()
-        self.discovery_task_id = self.progress.add_task(
+        self.discovery_task_id: TaskID | None = self.progress.add_task(
             "[cyan]Discovering repositories...", total=None
         )
         self.discovered_count = 0
-        self.gather_task_id: int | None = None
+        self.gather_task_id: TaskID | None = None
         self.total_to_collect = 0
 
     def discovering(self, path: Path) -> HookReturnAction:

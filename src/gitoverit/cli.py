@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Iterable, Iterator, List, Sequence
+from typing import Callable, Iterable, Iterator, List, Sequence
 from urllib.parse import urlparse
 
 import typer
@@ -40,6 +40,7 @@ class OutputFormat(str, Enum):
 
 class SortMode(str, Enum):
     MTIME = "mtime"
+    AUTHOR = "author"
     NONE = "none"
 
 
@@ -78,6 +79,52 @@ EXCEPTION_SENTINELS = (
 )
 
 
+def _default_sentinel_checker(repo: Repo, git_dir: Path) -> bool:
+    return True
+
+
+def _rev_parse_exists(repo: Repo, ref: str) -> bool:
+    try:
+        repo.git.rev_parse(ref)
+    except GitCommandError:
+        return False
+    return True
+
+
+def _rebase_metadata_present(git_dir: Path) -> bool:
+    return (git_dir / "rebase-merge").is_dir() or (git_dir / "rebase-apply").is_dir()
+
+
+def _sequencer_active(git_dir: Path) -> bool:
+    sequencer = git_dir / "sequencer"
+    if not sequencer.is_dir():
+        return False
+    todo = sequencer / "todo"
+    return todo.exists() and todo.stat().st_size > 0
+
+
+def _bisect_active(git_dir: Path) -> bool:
+    return (git_dir / "BISECT_START").exists()
+
+
+SENTINEL_VALIDATORS: dict[str, Callable[[Repo, Path], bool]] = {
+    "MERGE_HEAD": lambda repo, git_dir: _rev_parse_exists(repo, "MERGE_HEAD"),
+    "REBASE_HEAD": lambda repo, git_dir: _rebase_metadata_present(git_dir),
+    "rebase-merge": lambda repo, git_dir: _rebase_metadata_present(git_dir),
+    "rebase-apply": lambda repo, git_dir: _rebase_metadata_present(git_dir),
+    "CHERRY_PICK_HEAD": lambda repo, git_dir: _sequencer_active(git_dir)
+    and _rev_parse_exists(repo, "CHERRY_PICK_HEAD"),
+    "REVERT_HEAD": lambda repo, git_dir: _sequencer_active(git_dir)
+    and _rev_parse_exists(repo, "REVERT_HEAD"),
+    "BISECT_LOG": lambda repo, git_dir: _bisect_active(git_dir),
+}
+
+
+def unescalate_sentinel_file_exists(repo: Repo, sentinel: str) -> bool:
+    checker = SENTINEL_VALIDATORS.get(sentinel, _default_sentinel_checker)
+    return checker(repo, Path(repo.git_dir))
+
+
 @APP.command()
 def cli(
     dirs: List[Path] = typer.Argument(
@@ -96,7 +143,12 @@ def cli(
         SortMode.MTIME,
         "--sort",
         case_sensitive=False,
-        help="Sort repositories by mtime (default) or disable sorting with none",
+        help="Sort repositories by mtime (default), author, or disable sorting with none",
+    ),
+    reverse: bool = typer.Option(
+        False,
+        "--reverse",
+        help="Reverse sort order when a sort mode is active.",
     ),
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
@@ -160,7 +212,14 @@ def cli(
             progress.__exit__(None, None, None)
 
     if sort is SortMode.MTIME:
-        reports.sort(key=lambda report: report.latest_mtime or 0.0, reverse=True)
+        reports.sort(key=lambda report: report.latest_mtime or 0.0, reverse=not reverse)
+    elif sort is SortMode.AUTHOR:
+        reports.sort(
+            key=lambda report: (report.ident or "").lower(),
+            reverse=reverse,
+        )
+    elif reverse:
+        reports.reverse()
 
     if output_format is OutputFormat.JSON:
         typer.echo(json.dumps([report_to_dict(r) for r in reports], indent=2, sort_keys=True))
@@ -443,7 +502,8 @@ def has_exceptional_state(repo: Repo, parsed: ParsedStatus) -> bool:
     git_dir = Path(repo.git_dir)
     for sentinel in EXCEPTION_SENTINELS:
         if (git_dir / sentinel).exists():
-            return True
+            if unescalate_sentinel_file_exists(repo, sentinel):
+                return True
     return False
 
 

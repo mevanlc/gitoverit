@@ -7,6 +7,8 @@ from tempfile import TemporaryDirectory
 from git import Actor, Repo
 
 from gitoverit.cli import (
+    ParsedStatus,
+    has_exceptional_state,
     latest_worktree_mtime,
     parse_status_porcelain,
     simplify_url,
@@ -66,6 +68,24 @@ class LatestWorktreeMtimeTests(unittest.TestCase):
             self.assertIsNotNone(latest)
             assert latest is not None
             self.assertGreaterEqual(latest, future_time - 0.01)
+
+
+class ExceptionalStateTests(unittest.TestCase):
+    def test_stale_rebase_head_ignored(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo = Repo.init(tmpdir)
+            worktree = Path(tmpdir)
+            tracked = worktree / "tracked.txt"
+            tracked.write_text("tracked")
+            repo.index.add([str(tracked.relative_to(worktree))])
+            author = Actor("Tester", "tester@example.com")
+            repo.index.commit("initial", author=author, committer=author)
+
+            rebase_head = Path(repo.git_dir) / "REBASE_HEAD"
+            rebase_head.write_text(repo.head.commit.hexsha + "\n")
+
+            parsed = ParsedStatus(0, 0, 0, False)
+            self.assertFalse(has_exceptional_state(repo, parsed))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 
 from git import Actor, Repo
 
-from gitoverit.cli import (
+from gitoverit.reporting import (
     ParsedStatus,
     has_exceptional_state,
     latest_worktree_mtime,

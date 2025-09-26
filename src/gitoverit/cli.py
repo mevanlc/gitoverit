@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, List, Sequence
+from typing import Callable, Iterable, Iterator, List, Protocol, Sequence
 from urllib.parse import urlparse
 
 import typer
@@ -42,6 +42,93 @@ class SortMode(str, Enum):
     MTIME = "mtime"
     AUTHOR = "author"
     NONE = "none"
+
+
+class HookReturnAction(str, Enum):
+    CONTINUE = "continue"
+    STOP = "stop"
+
+
+class ProgressHookProtocol(Protocol):
+    def discovering(self, path: Path) -> HookReturnAction | None: ...
+
+    def start_collect(self, total: int) -> HookReturnAction | None: ...
+
+    def collecting(self, index: int, path: Path) -> HookReturnAction | None: ...
+
+    def done(self) -> HookReturnAction | None: ...
+
+
+class RichProgressHook(ProgressHookProtocol):
+    def __init__(self, console: Console) -> None:
+        self.console = console
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(bar_width=None),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=True,
+        )
+        self.progress.__enter__()
+        self.discovery_task_id = self.progress.add_task(
+            "[cyan]Discovering repositories...", total=None
+        )
+        self.discovered_count = 0
+        self.gather_task_id: int | None = None
+        self.total_to_collect = 0
+
+    def discovering(self, path: Path) -> HookReturnAction:
+        self.discovered_count += 1
+        if self.discovery_task_id is not None:
+            description = (
+                f"[cyan]Discovering repositories ({self.discovered_count})"
+            )
+            self.progress.update(self.discovery_task_id, description=description)
+        return HookReturnAction.CONTINUE
+
+    def start_collect(self, total: int) -> HookReturnAction:
+        self.total_to_collect = total
+        if self.discovery_task_id is not None:
+            self.progress.remove_task(self.discovery_task_id)
+            self.discovery_task_id = None
+        if total <= 0:
+            return HookReturnAction.CONTINUE
+        self.gather_task_id = self.progress.add_task(
+            "[cyan]Gathering status...", total=total
+        )
+        return HookReturnAction.CONTINUE
+
+    def collecting(self, index: int, path: Path) -> HookReturnAction:
+        if self.gather_task_id is not None:
+            display_name = path.name or str(path)
+            description = (
+                f"[cyan]Gathering status ({index}/{self.total_to_collect}): {display_name}"
+            )
+            self.progress.update(
+                self.gather_task_id,
+                advance=1,
+                description=description,
+            )
+        return HookReturnAction.CONTINUE
+
+    def done(self) -> HookReturnAction:
+        if self.discovery_task_id is not None:
+            self.progress.remove_task(self.discovery_task_id)
+            self.discovery_task_id = None
+        self.progress.__exit__(None, None, None)
+        return HookReturnAction.CONTINUE
+
+
+def _hook_requests_stop(
+    hook: ProgressHookProtocol | None, method: str, *args
+) -> bool:
+    if hook is None:
+        return False
+    handler = getattr(hook, method)
+    result = handler(*args)
+    return result is HookReturnAction.STOP
 
 
 @dataclass
@@ -154,62 +241,38 @@ def cli(
     """Scan git repositories beneath the given directories and show their status."""
 
     reports: list[RepoReport] = []
-
-    show_progress = _stdout_is_tty()
-    progress: Progress | None = None
-    discovery_task_id: int | None = None
-    gather_task_id: int | None = None
-
     repo_paths: list[Path] = []
 
+    hook: ProgressHookProtocol | None = None
+    stop_requested = False
+
     try:
-        if show_progress:
-            progress = Progress(
-                SpinnerColumn(),
-                TextColumn("{task.description}"),
-                BarColumn(bar_width=None),
-                TaskProgressColumn(),
-                TimeRemainingColumn(),
-                console=console,
-                transient=True,
-            )
-            progress.__enter__()
-            discovery_task_id = progress.add_task("[cyan]Discovering repositories...", total=None)
+        if _stdout_is_tty():
+            hook = RichProgressHook(console)
 
         for repo_path in discover_repositories(dirs):
+            if _hook_requests_stop(hook, "discovering", repo_path):
+                stop_requested = True
+                break
             repo_paths.append(repo_path)
-            if progress is not None and discovery_task_id is not None:
-                progress.update(
-                    discovery_task_id,
-                    description=f"[cyan]Discovering repositories ({len(repo_paths)})",
-                )
 
-        if progress is not None and discovery_task_id is not None:
-            progress.remove_task(discovery_task_id)
-            gather_task_id = progress.add_task(
-                "[cyan]Gathering status...",
-                total=len(repo_paths),
-            )
-
-        for index, repo_path in enumerate(repo_paths, start=1):
-            if progress is not None and gather_task_id is not None:
-                display_name = repo_path.name or str(repo_path)
-                progress.update(
-                    gather_task_id,
-                    description=(
-                        f"[cyan]Gathering status ({index}/{len(repo_paths)}): "
-                        f"{display_name}"
-                    ),
-                )
-            report = analyze_repository(repo_path, fetch=fetch)
-            if progress is not None and gather_task_id is not None:
-                progress.update(gather_task_id, advance=1)
-            if dirty_only and not report.dirty and not report.fetch_failed:
-                continue
-            reports.append(report)
+        if not stop_requested and repo_paths:
+            if _hook_requests_stop(hook, "start_collect", len(repo_paths)):
+                stop_requested = True
+            else:
+                for index, repo_path in enumerate(repo_paths, start=1):
+                    report = analyze_repository(repo_path, fetch=fetch)
+                    include = not (
+                        dirty_only and not report.dirty and not report.fetch_failed
+                    )
+                    if include:
+                        reports.append(report)
+                    if _hook_requests_stop(hook, "collecting", index, repo_path):
+                        stop_requested = True
+                        break
     finally:
-        if progress is not None:
-            progress.__exit__(None, None, None)
+        if hook is not None:
+            hook.done()
 
     if sort is SortMode.MTIME:
         reports.sort(key=lambda report: report.latest_mtime or 0.0, reverse=not reverse)

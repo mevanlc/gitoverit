@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Sequence
@@ -113,33 +113,33 @@ def collect_reports_parallel(
     hook: HookProtocol | None = None,
     max_workers: int | None = None,
 ) -> list[RepoReport]:
-    """Parallel version of collect_reports"""
+    """Parallel version of collect_reports with streaming discovery"""
 
-    # Phase 1: Discovery (still serial, it's I/O bound anyway)
-    repo_paths: list[Path] = []
-    for repo_path in discover_repositories(dirs):
-        if hook:
-            hook.discovering(repo_path)
-        repo_paths.append(repo_path)
-
-    if not repo_paths:
-        return []
-
-    # Phase 2: Parallel processing
     reports: list[RepoReport] = []
     error_count = 0
 
-    if hook:
-        hook.start_collect(len(repo_paths))
-
     with ProcessPoolExecutor(max_workers=get_worker_count(max_workers)) as executor:
-        # Submit all work - just pass analyze_repository directly!
-        futures = {
-            executor.submit(analyze_repository, path, fetch): path
-            for path in repo_paths
-        }
+        # Phase 1: Stream discovery - submit repos to pool as we find them
+        futures: dict[Future[RepoReport], Path] = {}
 
-        # Collect results as they complete
+        for repo_path in discover_repositories(dirs):
+            if hook:
+                hook.discovering(repo_path)
+
+            # Submit immediately - workers start processing while discovery continues
+            future = executor.submit(analyze_repository, repo_path, fetch)
+            futures[future] = repo_path
+
+        # Discovery complete - now we know the total count
+        if not futures:
+            if hook:
+                hook.done()
+            return []
+
+        if hook:
+            hook.start_collect(len(futures))
+
+        # Phase 2: Collect results as they complete
         for completed, future in enumerate(as_completed(futures), 1):
             path = futures[future]
 

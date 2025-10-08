@@ -58,32 +58,28 @@ def cli(
         "--reverse",
         help="Reverse sort order when a sort mode is active.",
     ),
-    parallel: bool = typer.Option(
-        False,
-        "--parallel", "-p",
-        help="Use parallel processing (experimental)"
-    ),
-    workers: Optional[int] = typer.Option(
+    parallel: Optional[int] = typer.Option(
         None,
-        "--workers", "-w",
-        help="Number of parallel workers (default: auto-detect, only with --parallel)"
+        "--parallel", "-p",
+        help="Number of parallel workers (default: auto-detect, 0 = sequential mode)"
     ),
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
 
     hook = RichHook(console) if _stdout_is_tty() else None
 
-    # Choose sequential or parallel based on flag
-    if parallel:
+    # Use sequential mode only if explicitly set to 0
+    if parallel == 0:
+        reports = collect_reports(dirs, fetch=fetch, dirty_only=dirty_only, hook=hook)
+    else:
+        # Default: parallel mode with auto-detect (None) or specified worker count
         reports = collect_reports_parallel(
             dirs,
             fetch=fetch,
             dirty_only=dirty_only,
             hook=hook,
-            max_workers=workers
+            max_workers=parallel  # None means auto-detect, or use specified count
         )
-    else:
-        reports = collect_reports(dirs, fetch=fetch, dirty_only=dirty_only, hook=hook)
 
     _sort_reports(reports, sort=sort, reverse=reverse)
 

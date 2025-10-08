@@ -4,14 +4,14 @@ import os
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, List
+from typing import Annotated, List, Optional
 
 import typer
 from rich.console import Console
 
 from .output import render_json, render_table
 from .progress import RichHook
-from .reporting import RepoReport, collect_reports
+from .reporting import RepoReport, collect_reports, collect_reports_parallel
 
 console = Console()
 
@@ -58,11 +58,32 @@ def cli(
         "--reverse",
         help="Reverse sort order when a sort mode is active.",
     ),
+    parallel: bool = typer.Option(
+        False,
+        "--parallel", "-p",
+        help="Use parallel processing (experimental)"
+    ),
+    workers: Optional[int] = typer.Option(
+        None,
+        "--workers", "-w",
+        help="Number of parallel workers (default: auto-detect, only with --parallel)"
+    ),
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
 
     hook = RichHook(console) if _stdout_is_tty() else None
-    reports = collect_reports(dirs, fetch=fetch, dirty_only=dirty_only, hook=hook)
+
+    # Choose sequential or parallel based on flag
+    if parallel:
+        reports = collect_reports_parallel(
+            dirs,
+            fetch=fetch,
+            dirty_only=dirty_only,
+            hook=hook,
+            max_workers=workers
+        )
+    else:
+        reports = collect_reports(dirs, fetch=fetch, dirty_only=dirty_only, hook=hook)
 
     _sort_reports(reports, sort=sort, reverse=reverse)
 

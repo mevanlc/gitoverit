@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Sequence
@@ -10,7 +11,7 @@ from urllib.parse import urlparse
 from git import GitCommandError, Repo
 from rich.text import Text
 
-from .progress import HookProtocol, dispatch_hook
+from .progress import HookProtocol
 
 
 @dataclass
@@ -65,32 +66,97 @@ def collect_reports(
 ) -> list[RepoReport]:
     reports: list[RepoReport] = []
     repo_paths: list[Path] = []
-    stop_requested = False
 
     try:
         for repo_path in discover_repositories(dirs):
-            if dispatch_hook(hook, "discovering", repo_path):
-                stop_requested = True
-                break
+            if hook:
+                hook.discovering(repo_path)
             repo_paths.append(repo_path)
 
-        if not stop_requested and repo_paths:
-            if dispatch_hook(hook, "start_collect", len(repo_paths)):
-                stop_requested = True
-            else:
-                for index, repo_path in enumerate(repo_paths, start=1):
-                    report = analyze_repository(repo_path, fetch=fetch)
-                    include = not (
-                        dirty_only and not report.dirty and not report.fetch_failed
-                    )
-                    if include:
-                        reports.append(report)
-                    if dispatch_hook(hook, "collecting", index, repo_path):
-                        stop_requested = True
-                        break
+        if repo_paths:
+            if hook:
+                hook.start_collect(len(repo_paths))
+
+            for index, repo_path in enumerate(repo_paths, start=1):
+                report = analyze_repository(repo_path, fetch=fetch)
+                include = not (
+                    dirty_only and not report.dirty and not report.fetch_failed
+                )
+                if include:
+                    reports.append(report)
+                if hook:
+                    hook.collecting(index, repo_path)
     finally:
         if hook is not None:
             hook.done()
+
+    return reports
+
+
+def get_worker_count(user_override: int | None = None) -> int:
+    """Simple worker count logic"""
+    if user_override is not None:
+        return max(1, user_override)
+
+    cpu_count = os.cpu_count() or 1
+    if cpu_count <= 2:
+        return cpu_count
+    else:
+        return min(cpu_count - 1, 8)
+
+
+def collect_reports_parallel(
+    dirs: Iterable[Path],
+    *,
+    fetch: bool,
+    dirty_only: bool,
+    hook: HookProtocol | None = None,
+    max_workers: int | None = None,
+) -> list[RepoReport]:
+    """Parallel version of collect_reports"""
+
+    # Phase 1: Discovery (still serial, it's I/O bound anyway)
+    repo_paths: list[Path] = []
+    for repo_path in discover_repositories(dirs):
+        if hook:
+            hook.discovering(repo_path)
+        repo_paths.append(repo_path)
+
+    if not repo_paths:
+        return []
+
+    # Phase 2: Parallel processing
+    reports: list[RepoReport] = []
+    error_count = 0
+
+    if hook:
+        hook.start_collect(len(repo_paths))
+
+    with ProcessPoolExecutor(max_workers=get_worker_count(max_workers)) as executor:
+        # Submit all work - just pass analyze_repository directly!
+        futures = {
+            executor.submit(analyze_repository, path, fetch): path
+            for path in repo_paths
+        }
+
+        # Collect results as they complete
+        for completed, future in enumerate(as_completed(futures), 1):
+            path = futures[future]
+
+            try:
+                report = future.result()  # Will raise if worker raised
+                if not (dirty_only and not report.dirty and not report.fetch_failed):
+                    reports.append(report)
+            except Exception as e:
+                # Worker raised an exception - log it but continue
+                error_count += 1
+                # Could log: print(f"Failed to analyze {path}: {e}")
+
+            if hook:
+                hook.collecting(completed, path)
+
+    if hook:
+        hook.done()
 
     return reports
 
@@ -508,6 +574,7 @@ __all__ = [
     "ParsedStatus",
     "RepoReport",
     "collect_reports",
+    "collect_reports_parallel",
     "has_exceptional_state",
     "latest_worktree_mtime",
     "parse_status_porcelain",

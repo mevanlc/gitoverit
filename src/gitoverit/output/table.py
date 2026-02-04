@@ -29,6 +29,7 @@ class AutoColumn:
 
     header: str
     style: Style | str | None = None
+    priority: int = 1  # Higher = more important, less likely to be truncated
 
 
 @dataclass
@@ -52,9 +53,17 @@ class AutoTable:
     _columns: list[AutoColumn] = field(default_factory=list)
     _rows: list[list[Text | str]] = field(default_factory=list)
 
-    def add_column(self, header: str, style: Style | str | None = None) -> None:
-        """Add a column to the table."""
-        self._columns.append(AutoColumn(header=header, style=style))
+    def add_column(
+        self, header: str, style: Style | str | None = None, priority: int = 1
+    ) -> None:
+        """Add a column to the table.
+
+        Args:
+            header: Column header text.
+            style: Optional style for the column.
+            priority: Importance weight (higher = protect from truncation).
+        """
+        self._columns.append(AutoColumn(header=header, style=style, priority=priority))
 
     def add_row(self, *cells: Text | str) -> None:
         """Add a row to the table."""
@@ -204,10 +213,10 @@ class AutoTable:
             return self._optimize_greedy_cells(available, min_widths)
 
     def _optimize_greedy_chars(self, available: int, min_widths: list[int]) -> list[int]:
-        """Minimize total characters truncated.
+        """Minimize total (priority-weighted) characters truncated.
 
-        Greedy: give +1 to whichever column has the most abbreviated cells
-        (each abbreviated cell saves 1 char of truncation).
+        Greedy: give +1 to whichever column has the highest weighted benefit
+        (abbreviated cells * priority).
         """
         num_cols = len(min_widths)
         widths = list(min_widths)
@@ -216,16 +225,18 @@ class AutoTable:
         if budget <= 0:
             return widths
 
-        # Precompute all cell widths
+        # Precompute all cell widths and priorities
         all_cell_widths = [self._get_cell_widths(i) for i in range(num_cols)]
+        priorities = [self._columns[i].priority for i in range(num_cols)]
 
         for _ in range(budget):
             best_col = -1
             best_benefit = 0
 
             for col_idx, cell_widths in enumerate(all_cell_widths):
-                # Benefit = count of cells still abbreviated (each saves 1 char)
-                benefit = sum(1 for w in cell_widths if w > widths[col_idx])
+                # Benefit = count of cells still abbreviated * priority
+                raw_benefit = sum(1 for w in cell_widths if w > widths[col_idx])
+                benefit = raw_benefit * priorities[col_idx]
                 if benefit > best_benefit:
                     best_benefit = benefit
                     best_col = col_idx
@@ -238,9 +249,10 @@ class AutoTable:
         return widths
 
     def _optimize_greedy_cells(self, available: int, min_widths: list[int]) -> list[int]:
-        """Minimize count of truncated cells.
+        """Minimize count of (priority-weighted) truncated cells.
 
         Greedy: jump to breakpoints (cell widths), picking best cost/benefit ratio.
+        Priority is factored into the benefit calculation.
         """
         num_cols = len(min_widths)
         widths = list(min_widths)
@@ -249,12 +261,13 @@ class AutoTable:
         if budget <= 0:
             return widths
 
-        # Precompute all cell widths for efficiency
+        # Precompute all cell widths and priorities
         all_cell_widths = [self._get_cell_widths(i) for i in range(num_cols)]
+        priorities = [self._columns[i].priority for i in range(num_cols)]
 
         while budget > 0:
             best_col = -1
-            best_ratio = 0.0  # benefit per unit cost
+            best_ratio = 0.0  # weighted benefit per unit cost
             best_cost = 0
             best_benefit = 0
 
@@ -271,10 +284,11 @@ class AutoTable:
                 if cost > budget:
                     continue  # Can't afford this jump
 
-                # Benefit: how many cells would be un-abbreviated at next_breakpoint?
-                benefit = sum(1 for w in cell_widths if w == next_breakpoint)
+                # Benefit: cells un-abbreviated * priority
+                raw_benefit = sum(1 for w in cell_widths if w == next_breakpoint)
+                benefit = raw_benefit * priorities[col_idx]
 
-                # Ratio: benefit per unit of width spent
+                # Ratio: weighted benefit per unit of width spent
                 ratio = benefit / cost if cost > 0 else 0
 
                 if ratio > best_ratio or (ratio == best_ratio and benefit > best_benefit):
@@ -619,12 +633,12 @@ def render_table(
     )
 
     table = AutoTable(width="fill", minimize_chars=minimize_chars)
-    table.add_column("Dir")
-    table.add_column("Status")
-    table.add_column("Branch")
-    table.add_column("Remote")
-    table.add_column("URL")
-    table.add_column("Ident")
+    table.add_column("Dir", priority=5)
+    table.add_column("Status", priority=10)  # Most important: is it dirty?
+    table.add_column("Branch", priority=5)
+    table.add_column("Remote", priority=3)
+    table.add_column("URL", priority=3)
+    table.add_column("Ident", priority=1)  # Often predictable/same person
 
     for report in reports:
         table.add_row(

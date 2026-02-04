@@ -4,14 +4,15 @@ import os
 import sys
 from enum import Enum
 from pathlib import Path
+from traceback import TracebackException
 from typing import Annotated, List, Optional
 
 import typer
 from rich.console import Console
 
 from .output import render_json, render_table
-from .progress import RichHook
-from .reporting import RepoReport, collect_reports_parallel
+from .progress import RichHook, SilentHook
+from .reporting import RepoReport, collect_reports_parallel, relativize
 
 console = Console()
 
@@ -31,6 +32,12 @@ class SortMode(str, Enum):
     MTIME = "mtime"
     AUTHOR = "author"
     NONE = "none"
+
+
+class ErrorFormat(str, Enum):
+    IGNORE = "ignore"
+    SHORT = "short"
+    LONG = "long"
 
 
 @APP.command()
@@ -63,10 +70,16 @@ def cli(
         "--parallel", "-p",
         help="Number of parallel workers (default: auto-detect, 0 = sequential mode)"
     ),
+    errorfmt: ErrorFormat = typer.Option(
+        ErrorFormat.SHORT,
+        "--errorfmt",
+        case_sensitive=False,
+        help="Error display: ignore (silent), short (one line per error), long (full traceback, skip table)"
+    ),
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
 
-    hook = RichHook(console) if _stdout_is_tty() else None
+    hook: RichHook | SilentHook = RichHook(console) if _stdout_is_tty() else SilentHook()
 
     reports = collect_reports_parallel(
         dirs,
@@ -76,12 +89,24 @@ def cli(
         max_workers=parallel,  # None means auto-detect, 0 means sequential, N means N workers
     )
 
+    errors = hook.get_errors()
+
     _sort_reports(reports, sort=sort, reverse=reverse)
 
-    if output_format is OutputFormat.JSON:
-        typer.echo(render_json(reports))
+    # Handle error display based on errorfmt
+    if errorfmt is ErrorFormat.LONG and errors:
+        # Long format with errors: skip table, show full tracebacks
+        _render_errors_long(console, errors)
     else:
-        render_table(console, reports)
+        # Show table (ignore, short, or long with no errors)
+        if output_format is OutputFormat.JSON:
+            typer.echo(render_json(reports))
+        else:
+            render_table(console, reports)
+
+        # Short format: show one-line errors after table
+        if errorfmt is ErrorFormat.SHORT and errors:
+            _render_errors_short(console, errors)
 
 
 def _sort_reports(reports: List[RepoReport], *, sort: SortMode, reverse: bool) -> None:
@@ -101,6 +126,36 @@ def _stdout_is_tty() -> bool:
         return os.isatty(sys.stdout.fileno())
     except Exception:
         return False
+
+
+def _render_errors_short(
+    console: Console, errors: list[tuple[Path, TracebackException | None]]
+) -> None:
+    """Render one line per error after the table."""
+    console.print()
+    for path, tb in errors:
+        display_path = relativize(path)
+        if tb is not None:
+            exc_type = tb.exc_type.__name__ if tb.exc_type else "Error"
+            exc_msg = str(tb).split("\n")[-1].strip() if str(tb) else ""
+            console.print(f"[red]Error:[/red] {display_path}: {exc_type}: {exc_msg}")
+        else:
+            console.print(f"[red]Error:[/red] {display_path}: unknown error")
+
+
+def _render_errors_long(
+    console: Console, errors: list[tuple[Path, TracebackException | None]]
+) -> None:
+    """Render full tracebacks for all errors, skip the table."""
+    for path, tb in errors:
+        display_path = relativize(path)
+        console.print(f"[red bold]Error in {display_path}:[/red bold]")
+        if tb is not None:
+            for line in tb.format():
+                console.print(line, end="")
+        else:
+            console.print("  unknown error")
+        console.print()
 
 
 def main() -> None:

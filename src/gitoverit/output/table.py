@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -632,13 +633,26 @@ def render_table(
         any(segment == "!" for segment, _ in report.status_segments) for report in reports
     )
 
+    # Default priorities: Status most important, Ident least
+    default_priorities = [5, 10, 5, 3, 3, 1]  # Dir, Status, Branch, Remote, URL, Ident
+
+    # Allow override via environment variable
+    env_priorities = os.environ.get("GITOVERIT_COLUMN_PRIORITIES")
+    if env_priorities:
+        try:
+            priorities = [int(p.strip()) for p in env_priorities.split(",")]
+            if len(priorities) == 6:
+                default_priorities = priorities
+        except ValueError:
+            pass  # Ignore invalid values, use defaults
+
     table = AutoTable(width="fill", minimize_chars=minimize_chars)
-    table.add_column("Dir", priority=5)
-    table.add_column("Status", priority=10)  # Most important: is it dirty?
-    table.add_column("Branch", priority=5)
-    table.add_column("Remote", priority=3)
-    table.add_column("URL", priority=3)
-    table.add_column("Ident", priority=1)  # Often predictable/same person
+    table.add_column("Dir", priority=default_priorities[0])
+    table.add_column("Status", priority=default_priorities[1])
+    table.add_column("Branch", priority=default_priorities[2])
+    table.add_column("Remote", priority=default_priorities[3])
+    table.add_column("URL", priority=default_priorities[4])
+    table.add_column("Ident", priority=default_priorities[5])
 
     for report in reports:
         table.add_row(

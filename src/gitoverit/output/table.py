@@ -166,6 +166,86 @@ class AutoTable:
                 widths.append(cell_len(text))
         return widths
 
+    def _marginal_benefit(self, col_idx: int, current_width: int) -> int:
+        """How many cells would become un-abbreviated if we add +1 width to this column?
+
+        This is the "marginal benefit" of allocating one more unit of width.
+        """
+        cell_widths = self._get_cell_widths(col_idx)
+        # Count cells that are exactly at current_width + 1 (would become un-abbreviated)
+        return sum(1 for w in cell_widths if w == current_width + 1)
+
+    def _optimize_widths_greedy(
+        self,
+        available: int,
+        min_widths: list[int],
+    ) -> list[int]:
+        """Greedy optimal algorithm for width allocation.
+
+        Considers jumping to "breakpoints" (cell widths) rather than +1 increments.
+        At each step, picks the column where the cost/benefit ratio is best:
+        benefit = cells un-abbreviated, cost = width needed to reach next breakpoint.
+
+        This is optimal for minimizing total abbreviated cells.
+        """
+        num_cols = len(min_widths)
+        widths = list(min_widths)
+        budget = available - sum(min_widths)
+
+        if budget <= 0:
+            return widths
+
+        # Precompute all cell widths for efficiency
+        all_cell_widths = [self._get_cell_widths(i) for i in range(num_cols)]
+
+        while budget > 0:
+            best_col = -1
+            best_ratio = 0.0  # benefit per unit cost
+            best_cost = 0
+            best_benefit = 0
+
+            for col_idx, cell_widths in enumerate(all_cell_widths):
+                current = widths[col_idx]
+                # Find the next breakpoint: smallest cell width > current
+                abbreviated = [w for w in cell_widths if w > current]
+                if not abbreviated:
+                    continue  # All cells fit, no benefit
+
+                next_breakpoint = min(abbreviated)
+                cost = next_breakpoint - current
+
+                if cost > budget:
+                    continue  # Can't afford this jump
+
+                # Benefit: how many cells would be un-abbreviated at next_breakpoint?
+                benefit = sum(1 for w in cell_widths if w == next_breakpoint)
+
+                # Ratio: benefit per unit of width spent
+                ratio = benefit / cost if cost > 0 else 0
+
+                if ratio > best_ratio or (ratio == best_ratio and benefit > best_benefit):
+                    best_ratio = ratio
+                    best_col = col_idx
+                    best_cost = cost
+                    best_benefit = benefit
+
+            if best_col == -1:
+                # No affordable improvements, distribute remainder
+                # Give to columns that still have abbreviated cells, proportionally
+                abbreviated_cols = [
+                    i for i in range(num_cols)
+                    if any(w > widths[i] for w in all_cell_widths[i])
+                ]
+                if abbreviated_cols:
+                    for i in range(budget):
+                        widths[abbreviated_cols[i % len(abbreviated_cols)]] += 1
+                break
+
+            widths[best_col] += best_cost
+            budget -= best_cost
+
+        return widths
+
     def _donor_capacity(self, col_idx: int, current_width: int, min_width: int) -> int:
         """How much can this column donate without abbreviating any of its cells?
 
@@ -320,9 +400,8 @@ class AutoTable:
                 return widths
             return ideal_widths
 
-        # Need abbreviation - distribute and optimize
-        widths = self._distribute_proportionally(available_for_content, ideal_widths, min_widths)
-        widths = self._optimize_widths(widths, min_widths)
+        # Need abbreviation - use greedy optimal allocation
+        widths = self._optimize_widths_greedy(available_for_content, min_widths)
 
         return widths
 

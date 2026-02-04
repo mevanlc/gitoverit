@@ -64,42 +64,20 @@ def collect_reports(
     dirty_only: bool,
     hook: HookProtocol | None = None,
 ) -> list[RepoReport]:
-    reports: list[RepoReport] = []
-    repo_paths: list[Path] = []
-
-    try:
-        if hook:
-            hook.start_collect(0)
-
-        for repo_path in discover_repositories(dirs):
-            if hook:
-                hook.discovering(repo_path)
-            repo_paths.append(repo_path)
-
-        if hook:
-            hook.discovery_done()
-            hook.start_collect(len(repo_paths))
-
-        for index, repo_path in enumerate(repo_paths, start=1):
-            report = analyze_repository(repo_path, fetch=fetch)
-            include = not (
-                dirty_only and not report.dirty and not report.fetch_failed
-            )
-            if include:
-                reports.append(report)
-            if hook:
-                hook.collecting(index, repo_path)
-    finally:
-        if hook is not None:
-            hook.done()
-
-    return reports
+    # Backwards-compatible wrapper for sequential runs.
+    return collect_reports_parallel(
+        dirs,
+        fetch=fetch,
+        dirty_only=dirty_only,
+        hook=hook,
+        max_workers=0,
+    )
 
 
 def get_worker_count(user_override: int | None = None) -> int:
     """Simple worker count logic"""
     if user_override is not None:
-        return max(1, user_override)
+        return max(0, user_override)
 
     cpu_count = os.cpu_count() or 1
     if cpu_count <= 2:
@@ -127,6 +105,34 @@ def collect_reports_parallel(
             hook.start_collect(0)
 
         worker_count = get_worker_count(max_workers)
+        if worker_count == 0:
+            repo_paths: list[Path] = []
+            for repo_path in discover_repositories(dirs):
+                discovered_total += 1
+                if hook:
+                    hook.discovering(repo_path)
+                repo_paths.append(repo_path)
+
+            if hook:
+                hook.discovery_done()
+                hook.start_collect(discovered_total)
+
+            for index, repo_path in enumerate(repo_paths, start=1):
+                statused_total = index
+                try:
+                    report = analyze_repository(repo_path, fetch=fetch)
+                    if not (
+                        dirty_only and not report.dirty and not report.fetch_failed
+                    ):
+                        reports.append(report)
+                except Exception:
+                    if hook:
+                        hook.error(repo_path)
+                if hook:
+                    hook.collecting(index, repo_path)
+
+            return reports
+
         max_pending = max(1, worker_count * 4)
 
         discovery_finished = False
@@ -159,7 +165,6 @@ def collect_reports_parallel(
 
                 completed, _ = wait(
                     futures,
-                    timeout=0.1,
                     return_when=FIRST_COMPLETED,
                 )
                 for future in completed:
@@ -176,10 +181,6 @@ def collect_reports_parallel(
                             hook.error(path)
                     if hook:
                         hook.collecting(statused_total, path)
-
-        if hook and not discovery_finished:
-            hook.discovery_done()
-            hook.start_collect(discovered_total)
     finally:
         if hook:
             hook.done()

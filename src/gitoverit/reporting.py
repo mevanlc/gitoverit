@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Sequence
@@ -64,39 +64,20 @@ def collect_reports(
     dirty_only: bool,
     hook: HookProtocol | None = None,
 ) -> list[RepoReport]:
-    reports: list[RepoReport] = []
-    repo_paths: list[Path] = []
-
-    try:
-        for repo_path in discover_repositories(dirs):
-            if hook:
-                hook.discovering(repo_path)
-            repo_paths.append(repo_path)
-
-        if repo_paths:
-            if hook:
-                hook.start_collect(len(repo_paths))
-
-            for index, repo_path in enumerate(repo_paths, start=1):
-                report = analyze_repository(repo_path, fetch=fetch)
-                include = not (
-                    dirty_only and not report.dirty and not report.fetch_failed
-                )
-                if include:
-                    reports.append(report)
-                if hook:
-                    hook.collecting(index, repo_path)
-    finally:
-        if hook is not None:
-            hook.done()
-
-    return reports
+    # Backwards-compatible wrapper for sequential runs.
+    return collect_reports_parallel(
+        dirs,
+        fetch=fetch,
+        dirty_only=dirty_only,
+        hook=hook,
+        max_workers=0,
+    )
 
 
 def get_worker_count(user_override: int | None = None) -> int:
     """Simple worker count logic"""
     if user_override is not None:
-        return max(1, user_override)
+        return max(0, user_override)
 
     cpu_count = os.cpu_count() or 1
     if cpu_count <= 2:
@@ -116,47 +97,93 @@ def collect_reports_parallel(
     """Parallel version of collect_reports with streaming discovery"""
 
     reports: list[RepoReport] = []
-    error_count = 0
+    discovered_total = 0
+    statused_total = 0
 
-    with ProcessPoolExecutor(max_workers=get_worker_count(max_workers)) as executor:
-        # Phase 1: Stream discovery - submit repos to pool as we find them
-        futures: dict[Future[RepoReport], Path] = {}
-
-        for repo_path in discover_repositories(dirs):
-            if hook:
-                hook.discovering(repo_path)
-
-            # Submit immediately - workers start processing while discovery continues
-            future = executor.submit(analyze_repository, repo_path, fetch)
-            futures[future] = repo_path
-
-        # Discovery complete - now we know the total count
-        if not futures:
-            if hook:
-                hook.done()
-            return []
-
+    try:
         if hook:
-            hook.start_collect(len(futures))
+            hook.start_collect(0)
 
-        # Phase 2: Collect results as they complete
-        for completed, future in enumerate(as_completed(futures), 1):
-            path = futures[future]
-
-            try:
-                report = future.result()  # Will raise if worker raised
-                if not (dirty_only and not report.dirty and not report.fetch_failed):
-                    reports.append(report)
-            except Exception as e:
-                # Worker raised an exception - log it but continue
-                error_count += 1
-                # Could log: print(f"Failed to analyze {path}: {e}")
+        worker_count = get_worker_count(max_workers)
+        if worker_count == 0:
+            repo_paths: list[Path] = []
+            for repo_path in discover_repositories(dirs):
+                discovered_total += 1
+                if hook:
+                    hook.discovering(repo_path)
+                repo_paths.append(repo_path)
 
             if hook:
-                hook.collecting(completed, path)
+                hook.discovery_done()
+                hook.start_collect(discovered_total)
 
-    if hook:
-        hook.done()
+            for index, repo_path in enumerate(repo_paths, start=1):
+                statused_total = index
+                try:
+                    report = analyze_repository(repo_path, fetch=fetch)
+                    if not (
+                        dirty_only and not report.dirty and not report.fetch_failed
+                    ):
+                        reports.append(report)
+                except Exception:
+                    if hook:
+                        hook.error(repo_path)
+                if hook:
+                    hook.collecting(index, repo_path)
+
+            return reports
+
+        max_pending = max(1, worker_count * 4)
+
+        discovery_finished = False
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            repo_iter = iter(discover_repositories(dirs))
+            futures: dict[Future[RepoReport], Path] = {}
+
+            while True:
+                while not discovery_finished and len(futures) < max_pending:
+                    try:
+                        repo_path = next(repo_iter)
+                    except StopIteration:
+                        discovery_finished = True
+                        if hook:
+                            hook.discovery_done()
+                            hook.start_collect(discovered_total)
+                        break
+
+                    discovered_total += 1
+                    if hook:
+                        hook.discovering(repo_path)
+
+                    future = executor.submit(analyze_repository, repo_path, fetch)
+                    futures[future] = repo_path
+
+                if not futures:
+                    if discovery_finished:
+                        break
+                    continue
+
+                completed, _ = wait(
+                    futures,
+                    return_when=FIRST_COMPLETED,
+                )
+                for future in completed:
+                    path = futures.pop(future)
+                    statused_total += 1
+                    try:
+                        report = future.result()
+                        if not (
+                            dirty_only and not report.dirty and not report.fetch_failed
+                        ):
+                            reports.append(report)
+                    except Exception:
+                        if hook:
+                            hook.error(path)
+                    if hook:
+                        hook.collecting(statused_total, path)
+    finally:
+        if hook:
+            hook.done()
 
     return reports
 

@@ -17,8 +17,8 @@ dependencies = [
 gitoverit = "gitoverit:main"
 
 [build-system]
-requires = ["uv_build>=0.8.17,<0.9.0"]
-build-backend = "uv_build"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [dependency-groups]
 dev = [

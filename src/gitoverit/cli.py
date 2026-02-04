@@ -11,7 +11,7 @@ from rich.console import Console
 
 from .output import render_json, render_table
 from .progress import RichHook
-from .reporting import RepoReport, collect_reports, collect_reports_parallel
+from .reporting import RepoReport, collect_reports_parallel
 
 console = Console()
 
@@ -68,18 +68,13 @@ def cli(
 
     hook = RichHook(console) if _stdout_is_tty() else None
 
-    # Use sequential mode only if explicitly set to 0
-    if parallel == 0:
-        reports = collect_reports(dirs, fetch=fetch, dirty_only=dirty_only, hook=hook)
-    else:
-        # Default: parallel mode with auto-detect (None) or specified worker count
-        reports = collect_reports_parallel(
-            dirs,
-            fetch=fetch,
-            dirty_only=dirty_only,
-            hook=hook,
-            max_workers=parallel  # None means auto-detect, or use specified count
-        )
+    reports = collect_reports_parallel(
+        dirs,
+        fetch=fetch,
+        dirty_only=dirty_only,
+        hook=hook,
+        max_workers=parallel,  # None means auto-detect, 0 means sequential, N means N workers
+    )
 
     _sort_reports(reports, sort=sort, reverse=reverse)
 

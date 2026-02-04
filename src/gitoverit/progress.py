@@ -32,6 +32,7 @@ class HookProtocol(Protocol):
 class RichHook(HookProtocol):
     def __init__(self, console: Console) -> None:
         self.console = console
+        self._closed = False
         self.progress = Progress(
             TextColumn("{task.description}"),
             BarColumn(bar_width=None),
@@ -128,9 +129,16 @@ class RichHook(HookProtocol):
         self.error_count += 1
 
     def done(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+
         if self.discovery_task_id is not None:
             self.progress.remove_task(self.discovery_task_id)
             self.discovery_task_id = None
+        if self.status_task_id is not None:
+            self.progress.remove_task(self.status_task_id)
+            self.status_task_id = None
         self.progress.__exit__(None, None, None)
 
 

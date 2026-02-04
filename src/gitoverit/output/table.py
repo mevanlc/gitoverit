@@ -166,27 +166,80 @@ class AutoTable:
                 widths.append(cell_len(text))
         return widths
 
-    def _marginal_benefit(self, col_idx: int, current_width: int) -> int:
-        """How many cells would become un-abbreviated if we add +1 width to this column?
+    def _count_truncated_chars(self, widths: list[int]) -> int:
+        """Total characters truncated across all cells."""
+        total = 0
+        for col_idx, width in enumerate(widths):
+            for cell_width in self._get_cell_widths(col_idx):
+                if cell_width > width:
+                    total += cell_width - width
+        return total
 
-        This is the "marginal benefit" of allocating one more unit of width.
+    def _marginal_benefit_chars(self, col_idx: int, current_width: int) -> int:
+        """How many characters of truncation would be saved by +1 width?
+
+        Equal to the count of cells still abbreviated (each saves 1 char).
         """
         cell_widths = self._get_cell_widths(col_idx)
-        # Count cells that are exactly at current_width + 1 (would become un-abbreviated)
-        return sum(1 for w in cell_widths if w == current_width + 1)
+        return sum(1 for w in cell_widths if w > current_width)
 
     def _optimize_widths_greedy(
         self,
         available: int,
         min_widths: list[int],
+        minimize_chars: bool = True,
     ) -> list[int]:
         """Greedy optimal algorithm for width allocation.
 
-        Considers jumping to "breakpoints" (cell widths) rather than +1 increments.
-        At each step, picks the column where the cost/benefit ratio is best:
-        benefit = cells un-abbreviated, cost = width needed to reach next breakpoint.
+        Args:
+            available: Total width available for content.
+            min_widths: Minimum width for each column.
+            minimize_chars: If True, minimize total characters truncated.
+                           If False, minimize count of truncated cells.
+        """
+        if minimize_chars:
+            return self._optimize_greedy_chars(available, min_widths)
+        else:
+            return self._optimize_greedy_cells(available, min_widths)
 
-        This is optimal for minimizing total abbreviated cells.
+    def _optimize_greedy_chars(self, available: int, min_widths: list[int]) -> list[int]:
+        """Minimize total characters truncated.
+
+        Greedy: give +1 to whichever column has the most abbreviated cells
+        (each abbreviated cell saves 1 char of truncation).
+        """
+        num_cols = len(min_widths)
+        widths = list(min_widths)
+        budget = available - sum(min_widths)
+
+        if budget <= 0:
+            return widths
+
+        # Precompute all cell widths
+        all_cell_widths = [self._get_cell_widths(i) for i in range(num_cols)]
+
+        for _ in range(budget):
+            best_col = -1
+            best_benefit = 0
+
+            for col_idx, cell_widths in enumerate(all_cell_widths):
+                # Benefit = count of cells still abbreviated (each saves 1 char)
+                benefit = sum(1 for w in cell_widths if w > widths[col_idx])
+                if benefit > best_benefit:
+                    best_benefit = benefit
+                    best_col = col_idx
+
+            if best_col == -1 or best_benefit == 0:
+                break  # Nothing more to improve
+
+            widths[best_col] += 1
+
+        return widths
+
+    def _optimize_greedy_cells(self, available: int, min_widths: list[int]) -> list[int]:
+        """Minimize count of truncated cells.
+
+        Greedy: jump to breakpoints (cell widths), picking best cost/benefit ratio.
         """
         num_cols = len(min_widths)
         widths = list(min_widths)
@@ -230,8 +283,7 @@ class AutoTable:
                     best_benefit = benefit
 
             if best_col == -1:
-                # No affordable improvements, distribute remainder
-                # Give to columns that still have abbreviated cells, proportionally
+                # No affordable improvements, distribute remainder to abbreviated cols
                 abbreviated_cols = [
                     i for i in range(num_cols)
                     if any(w > widths[i] for w in all_cell_widths[i])

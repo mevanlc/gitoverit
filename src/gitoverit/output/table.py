@@ -47,6 +47,7 @@ class AutoTable:
     box_style: box.Box = box.HEAVY_HEAD
     padding: int = 2
     min_col_width: int = 4
+    minimize_chars: bool = False  # False = minimize cells (strategic), True = minimize chars (spread)
 
     _columns: list[AutoColumn] = field(default_factory=list)
     _rows: list[list[Text | str]] = field(default_factory=list)
@@ -453,7 +454,9 @@ class AutoTable:
             return ideal_widths
 
         # Need abbreviation - use greedy optimal allocation
-        widths = self._optimize_widths_greedy(available_for_content, min_widths)
+        widths = self._optimize_widths_greedy(
+            available_for_content, min_widths, minimize_chars=self.minimize_chars
+        )
 
         return widths
 
@@ -608,12 +611,14 @@ def _status_text(report: RepoReport) -> Text:
     return text
 
 
-def render_table(console: Console, reports: Sequence[RepoReport]) -> None:
+def render_table(
+    console: Console, reports: Sequence[RepoReport], *, minimize_chars: bool = False
+) -> None:
     show_exceptional_key = any(
         any(segment == "!" for segment, _ in report.status_segments) for report in reports
     )
 
-    table = AutoTable(width="fill")
+    table = AutoTable(width="fill", minimize_chars=minimize_chars)
     table.add_column("Dir")
     table.add_column("Status")
     table.add_column("Branch")

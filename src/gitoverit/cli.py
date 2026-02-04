@@ -33,35 +33,46 @@ class SortMode(str, Enum):
     NONE = "none"
 
 
+class TableAlgo(str, Enum):
+    CELL = "cell"
+    CHAR = "char"
+
+
 @APP.command()
 def cli(
     dirs: Annotated[List[Path], typer.Argument(
         ..., exists=True, file_okay=False, dir_okay=True, writable=False
     )] = [Path.cwd()],
     fetch: bool = typer.Option(
-        False, "--fetch", help="Run git fetch --all for each repository before inspection."
+        False, "-f", "--fetch", help="Run git fetch --all for each repository before inspection."
     ),
     output_format: OutputFormat = typer.Option(
-        OutputFormat.TABLE, "--format", case_sensitive=False, help="Choose output format."
+        OutputFormat.TABLE, "-o", "--format", case_sensitive=False, help="Choose output format."
     ),
     dirty_only: bool = typer.Option(
-        False, "--dirty-only", help="Display only repositories with local or remote changes."
+        False, "-d", "--dirty-only", help="Display only repositories with local or remote changes."
     ),
     sort: SortMode = typer.Option(
         SortMode.MTIME,
-        "--sort",
+        "-s", "--sort",
         case_sensitive=False,
         help="Sort repositories by mtime (default), author, or disable sorting with none",
     ),
     reverse: bool = typer.Option(
         False,
-        "--reverse",
+        "-r", "--reverse",
         help="Reverse sort order when a sort mode is active.",
     ),
     parallel: Optional[int] = typer.Option(
         None,
-        "--parallel", "-p",
+        "-p", "--parallel",
         help="Number of parallel workers (default: auto-detect, 0 = sequential mode)"
+    ),
+    table_algo: TableAlgo = typer.Option(
+        TableAlgo.CELL,
+        "-a", "--table-algo",
+        case_sensitive=False,
+        help="Table column width algorithm: cell (minimize truncated cells) or char (minimize truncated chars)",
     ),
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
@@ -81,7 +92,8 @@ def cli(
     if output_format is OutputFormat.JSON:
         typer.echo(render_json(reports))
     else:
-        render_table(console, reports)
+        minimize_chars = table_algo is TableAlgo.CHAR
+        render_table(console, reports, minimize_chars=minimize_chars)
 
 
 def _sort_reports(reports: List[RepoReport], *, sort: SortMode, reverse: bool) -> None:

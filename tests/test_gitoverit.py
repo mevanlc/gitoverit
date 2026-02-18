@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 
 from git import Actor, Repo
 
+from gitoverit.output.table import DEFAULT_COLUMNS, parse_columns
 from gitoverit.reporting import (
     ParsedStatus,
     discover_repositories,
@@ -87,6 +88,47 @@ class ExceptionalStateTests(unittest.TestCase):
 
             parsed = ParsedStatus(0, 0, 0, False)
             self.assertFalse(has_exceptional_state(repo, parsed))
+
+
+class ParseColumnsTests(unittest.TestCase):
+    def test_no_spec_returns_default(self) -> None:
+        # Empty-ish spec should return default columns unchanged
+        self.assertEqual(parse_columns(""), DEFAULT_COLUMNS)
+
+    def test_remove_single(self) -> None:
+        result = parse_columns("-ident")
+        self.assertEqual(result, ["dir", "status", "branch", "remote", "url"])
+
+    def test_remove_multiple(self) -> None:
+        result = parse_columns("-ident,-remote")
+        self.assertEqual(result, ["dir", "status", "branch", "url"])
+
+    def test_clear_then_add(self) -> None:
+        result = parse_columns("-,url,branch,status,dir")
+        self.assertEqual(result, ["url", "branch", "status", "dir"])
+
+    def test_last_mention_wins_readd(self) -> None:
+        # Remove then re-add → included, appended at end
+        result = parse_columns("-dir,dir")
+        self.assertEqual(result, ["status", "branch", "remote", "url", "ident", "dir"])
+
+    def test_last_mention_wins_remove(self) -> None:
+        # Add then remove → excluded
+        result = parse_columns("-,dir,-dir")
+        self.assertEqual(result, [])
+
+    def test_add_moves_to_end(self) -> None:
+        # Mentioning an existing column moves it to the end
+        result = parse_columns("dir")
+        self.assertEqual(result, ["status", "branch", "remote", "url", "ident", "dir"])
+
+    def test_unknown_column_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_columns("bogus")
+
+    def test_unknown_removal_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_columns("-bogus")
 
 
 class DiscoverRepositoriesTests(unittest.TestCase):

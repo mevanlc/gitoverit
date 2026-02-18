@@ -9,7 +9,7 @@ from typing import Annotated, List, Optional
 import typer
 from rich.console import Console
 
-from .output import render_json, render_table
+from .output import parse_columns, render_json, render_table
 from .progress import RichHook
 from .reporting import RepoReport, collect_reports_parallel
 
@@ -74,6 +74,12 @@ def cli(
         case_sensitive=False,
         help="Table column width autosizing algorithm",
     ),
+    columns_spec: Optional[str] = typer.Option(
+        None,
+        "-c", "--columns",
+        help="Comma-separated column spec: col to add, -col to remove, - to clear all. "
+        "Columns: dir,status,branch,remote,url,ident",
+    ),
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
 
@@ -89,11 +95,13 @@ def cli(
 
     _sort_reports(reports, sort=sort, reverse=reverse)
 
+    columns = parse_columns(columns_spec) if columns_spec else None
+
     if output_format is OutputFormat.JSON:
         typer.echo(render_json(reports))
     else:
         minimize_chars = table_algo is TableAlgo.CHAR
-        render_table(console, reports, minimize_chars=minimize_chars)
+        render_table(console, reports, minimize_chars=minimize_chars, columns=columns)
 
 
 def _sort_reports(reports: List[RepoReport], *, sort: SortMode, reverse: bool) -> None:

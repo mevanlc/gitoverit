@@ -626,49 +626,105 @@ def _status_text(report: RepoReport) -> Text:
     return text
 
 
+DEFAULT_COLUMNS = ["dir", "status", "branch", "remote", "url", "ident"]
+
+_COLUMN_DEFS: dict[str, tuple[str, int]] = {
+    "dir": ("Dir", 5),
+    "status": ("Status", 10),
+    "branch": ("Branch", 5),
+    "remote": ("Remote", 3),
+    "url": ("URL", 3),
+    "ident": ("Ident", 1),
+}
+
+
+def _row_value(col: str, report: RepoReport) -> Text | str:
+    if col == "dir":
+        return report.display_path
+    if col == "status":
+        return _status_text(report)
+    if col == "branch":
+        return report.branch
+    if col == "remote":
+        return report.remote
+    if col == "url":
+        return report.remote_url
+    if col == "ident":
+        return report.ident or "-"
+    raise ValueError(f"Unknown column: {col!r}")
+
+
+def parse_columns(spec: str) -> list[str]:
+    """Parse a column spec string into an ordered list of column identifiers.
+
+    Tokens are comma-separated and processed left-to-right:
+      ``-``      clear all columns
+      ``-col``   remove *col*
+      ``col``    append *col* (moves to end if already present)
+
+    Last mention of a column wins.
+    """
+    result = list(DEFAULT_COLUMNS)
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token == "-":
+            result.clear()
+        elif token.startswith("-"):
+            name = token[1:]
+            if name not in _COLUMN_DEFS:
+                raise ValueError(f"Unknown column: {name!r}")
+            if name in result:
+                result.remove(name)
+        else:
+            if token not in _COLUMN_DEFS:
+                raise ValueError(f"Unknown column: {token!r}")
+            if token in result:
+                result.remove(token)
+            result.append(token)
+    return result
+
+
 def render_table(
-    console: Console, reports: Sequence[RepoReport], *, minimize_chars: bool = False
+    console: Console,
+    reports: Sequence[RepoReport],
+    *,
+    minimize_chars: bool = False,
+    columns: list[str] | None = None,
 ) -> None:
+    active_columns = columns if columns is not None else DEFAULT_COLUMNS
+
     show_exceptional_key = any(
         any(segment == "!" for segment, _ in report.status_segments) for report in reports
     )
 
-    # Default priorities: Status most important, Ident least
-    default_priorities = [5, 10, 5, 3, 3, 1]  # Dir, Status, Branch, Remote, URL, Ident
-
-    # Allow override via environment variable
+    # Allow priority override via environment variable
     env_priorities = os.environ.get("GITOVERIT_COLUMN_PRIORITIES")
+    priority_overrides: dict[str, int] = {}
     if env_priorities:
         try:
-            priorities = [int(p.strip()) for p in env_priorities.split(",")]
-            if len(priorities) == 6:
-                default_priorities = priorities
+            vals = [int(p.strip()) for p in env_priorities.split(",")]
+            if len(vals) == len(DEFAULT_COLUMNS):
+                priority_overrides = dict(zip(DEFAULT_COLUMNS, vals))
         except ValueError:
-            pass  # Ignore invalid values, use defaults
+            pass
 
     table = AutoTable(width="fill", minimize_chars=minimize_chars)
-    table.add_column("Dir", priority=default_priorities[0])
-    table.add_column("Status", priority=default_priorities[1])
-    table.add_column("Branch", priority=default_priorities[2])
-    table.add_column("Remote", priority=default_priorities[3])
-    table.add_column("URL", priority=default_priorities[4])
-    table.add_column("Ident", priority=default_priorities[5])
+    for col in active_columns:
+        header, default_priority = _COLUMN_DEFS[col]
+        priority = priority_overrides.get(col, default_priority)
+        table.add_column(header, priority=priority)
 
     for report in reports:
-        table.add_row(
-            report.display_path,
-            _status_text(report),
-            report.branch,
-            report.remote,
-            report.remote_url,
-            report.ident or "-",
-        )
+        table.add_row(*[_row_value(col, report) for col in active_columns])
+
     console.print(table)
 
-    if reports:
+    if reports and "status" in active_columns:
         console.print(_status_key_main())
         if show_exceptional_key:
             console.print(_status_key_exceptional())
 
 
-__all__ = ["AutoColumn", "AutoTable", "render_table"]
+__all__ = ["AutoColumn", "AutoTable", "DEFAULT_COLUMNS", "parse_columns", "render_table"]

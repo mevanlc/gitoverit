@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
@@ -193,6 +194,7 @@ def collect_reports_parallel(
 
 def discover_repositories(roots: Iterable[Path]) -> Iterator[Path]:
     seen: set[Path] = set()
+    known_repos: list[Path] = []
     normalized_roots = [root.resolve() for root in roots]
     for root in normalized_roots:
         if not root.is_dir():
@@ -206,7 +208,11 @@ def discover_repositories(roots: Iterable[Path]) -> Iterator[Path]:
                     continue
                 resolved = current.resolve()
                 if resolved not in seen:
+                    if _is_gitignored_by_parent(resolved, known_repos):
+                        dirnames[:] = []
+                        continue
                     seen.add(resolved)
+                    known_repos.append(resolved)
                     yield resolved
             if ".git" in dirnames:
                 dirnames.remove(".git")
@@ -220,6 +226,35 @@ def is_submodule_gitdir(git_dir: Path) -> bool:
     except OSError:
         return False
     return "modules" in content
+
+
+def _nearest_parent_repo(path: Path, known_repos: list[Path]) -> Path | None:
+    nearest: Path | None = None
+    nearest_depth = 0
+    for repo in known_repos:
+        if repo == path:
+            continue
+        try:
+            path.relative_to(repo)
+        except ValueError:
+            continue
+        depth = len(repo.parts)
+        if depth > nearest_depth:
+            nearest = repo
+            nearest_depth = depth
+    return nearest
+
+
+def _is_gitignored_by_parent(path: Path, known_repos: list[Path]) -> bool:
+    parent = _nearest_parent_repo(path, known_repos)
+    if parent is None:
+        return False
+    rel = path.relative_to(parent)
+    result = subprocess.run(
+        ["git", "-C", str(parent), "check-ignore", "-q", str(rel)],
+        capture_output=True,
+    )
+    return result.returncode == 0
 
 
 def analyze_repository(path: Path, fetch: bool) -> RepoReport:

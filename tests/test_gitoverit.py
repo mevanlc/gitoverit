@@ -8,6 +8,7 @@ from git import Actor, Repo
 
 from gitoverit.reporting import (
     ParsedStatus,
+    discover_repositories,
     has_exceptional_state,
     latest_worktree_mtime,
     parse_status_porcelain,
@@ -86,6 +87,69 @@ class ExceptionalStateTests(unittest.TestCase):
 
             parsed = ParsedStatus(0, 0, 0, False)
             self.assertFalse(has_exceptional_state(repo, parsed))
+
+
+class DiscoverRepositoriesTests(unittest.TestCase):
+    def test_gitignored_nested_repo_is_skipped(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir) / "parent"
+            parent.mkdir()
+            parent_repo = Repo.init(parent)
+
+            # Create a .gitignore that ignores the nested dir
+            gitignore = parent / ".gitignore"
+            gitignore.write_text("nested/\n")
+            parent_repo.index.add([".gitignore"])
+            author = Actor("Tester", "tester@example.com")
+            parent_repo.index.commit("init", author=author, committer=author)
+
+            # Create a nested repo inside the gitignored directory
+            nested = parent / "nested"
+            nested.mkdir()
+            Repo.init(nested)
+
+            discovered = list(discover_repositories([parent]))
+            resolved_paths = [p.resolve() for p in discovered]
+            self.assertIn(parent.resolve(), resolved_paths)
+            self.assertNotIn(nested.resolve(), resolved_paths)
+
+    def test_non_gitignored_nested_repo_is_found(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir) / "parent"
+            parent.mkdir()
+            Repo.init(parent)
+
+            # Nested repo that is NOT gitignored
+            nested = parent / "nested"
+            nested.mkdir()
+            Repo.init(nested)
+
+            discovered = list(discover_repositories([parent]))
+            resolved_paths = [p.resolve() for p in discovered]
+            self.assertIn(parent.resolve(), resolved_paths)
+            self.assertIn(nested.resolve(), resolved_paths)
+
+    def test_deeply_nested_under_gitignored_also_skipped(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir) / "parent"
+            parent.mkdir()
+            parent_repo = Repo.init(parent)
+
+            gitignore = parent / ".gitignore"
+            gitignore.write_text("vendor/\n")
+            parent_repo.index.add([".gitignore"])
+            author = Actor("Tester", "tester@example.com")
+            parent_repo.index.commit("init", author=author, committer=author)
+
+            # Create vendor/lib which is a repo, under a gitignored path
+            vendor_lib = parent / "vendor" / "lib"
+            vendor_lib.mkdir(parents=True)
+            Repo.init(vendor_lib)
+
+            discovered = list(discover_repositories([parent]))
+            resolved_paths = [p.resolve() for p in discovered]
+            self.assertIn(parent.resolve(), resolved_paths)
+            self.assertNotIn(vendor_lib.resolve(), resolved_paths)
 
 
 if __name__ == "__main__":

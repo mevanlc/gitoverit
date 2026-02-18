@@ -72,7 +72,7 @@ def cli(
         TableAlgo.CELL,
         "-a", "--table-algo",
         case_sensitive=False,
-        help="Table column width algorithm: cell (minimize truncated cells) or char (minimize truncated chars)",
+        help="Table column width autosizing algorithm",
     ),
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""

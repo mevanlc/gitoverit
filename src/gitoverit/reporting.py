@@ -420,6 +420,13 @@ def simplify_url(url: str) -> str:
         "gitlab.com": "gl:",
         "bitbucket.org": "bb:",
         "codeberg.org": "cb:",
+        "gitea.com": "gitea:",
+        "git.mozilla.org": "moz:",
+        "git.sr.ht": "sr.ht:",
+        "pagure.io": "pg:",
+        "git.kernel.org": "kernel:",
+        "git.apache.org": "apache:",
+        "git.savannah.gnu.org": "gnu:",
     }
     prefix = service_prefix_map.get(host)
     if prefix is None:

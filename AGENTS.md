@@ -1,5 +1,7 @@
 # Repo Orientation for Future Agents
 
+**First step**: Run `gitoverit --help` to see current CLI options and usage.
+
 ## Project Shape
 - **CLI entrypoint** lives in `src/gitoverit/cli.py`. It wires Typer argument parsing, selects a progress hook, and triggers report collection/rendering.
 - **Core Git inspection** resides in `src/gitoverit/reporting.py`. Key functions:
@@ -13,7 +15,7 @@
   - `HookProtocol` – simple progress notification protocol (no flow control).
   - `RichHook` – implements interactive progress bar with transition from indeterminate (discovery) to determinate (processing).
 - **Output formatting** split under `src/gitoverit/output/`:
-  - `table.py` renders Rich tables via `render_table(console, reports)`.
+  - `table.py` renders Rich tables via `render_table(console, reports)`. Column definitions, selection/reordering logic (`parse_columns`), and priority overrides live here.
   - `json.py` exposes `render_json(reports)` returning a JSON string.
 
 ## Discovery Filtering
@@ -33,14 +35,6 @@ During directory walking, `discover_repositories()` applies these filters:
 - Tasks are managed through lightweight scripts in `tasks/`. Run them with `uv run tasks/<name>`.
   - `tasks/check` executes Pyright (type checking).
   - `tasks/test` runs the unittest suite.
-- CLI: `gitoverit [OPTIONS] DIRS...`
-  - `-f`/`--fetch` – run `git fetch --all` per repo before inspection.
-  - `-d`/`--dirty-only` – only show repos with local or remote changes.
-  - `-o`/`--format` – output format: `table` (default) or `json`.
-  - `-s`/`--sort` – sort by `mtime` (default), `author`, or `none`.
-  - `-r`/`--reverse` – reverse sort order.
-  - `-p`/`--parallel` – worker count: None (auto), 0 (sequential), N (explicit).
-  - `-a`/`--table-algo` – column width algorithm: `cell` (default) or `char`.
 - Progress UI only activates when stdout is a TTY. Non-interactive runs skip hooks entirely.
 
 ## Conventions & Tips

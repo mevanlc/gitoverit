@@ -23,4 +23,5 @@ build-backend = "setuptools.build_meta"
 [dependency-groups]
 dev = [
     "pyright>=1.1.406",
+    "pytest>=9.0.2",
 ]

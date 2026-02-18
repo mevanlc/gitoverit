@@ -5,6 +5,7 @@ import re
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
+from traceback import TracebackException
 from typing import Callable, Iterable, Iterator, Sequence
 from urllib.parse import urlparse
 
@@ -125,9 +126,10 @@ def collect_reports_parallel(
                         dirty_only and not report.dirty and not report.fetch_failed
                     ):
                         reports.append(report)
-                except Exception:
+                except Exception as exc:
                     if hook:
-                        hook.error(repo_path)
+                        tb = TracebackException.from_exception(exc)
+                        hook.error(repo_path, tb)
                 if hook:
                     hook.collecting(index, repo_path)
 
@@ -176,9 +178,10 @@ def collect_reports_parallel(
                             dirty_only and not report.dirty and not report.fetch_failed
                         ):
                             reports.append(report)
-                    except Exception:
+                    except Exception as exc:
                         if hook:
-                            hook.error(path)
+                            tb = TracebackException.from_exception(exc)
+                            hook.error(path, tb)
                     if hook:
                         hook.collecting(statused_total, path)
     finally:

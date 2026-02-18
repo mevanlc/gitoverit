@@ -21,6 +21,8 @@ gitoverit [OPTIONS] <DIRS...>
   - Not specified (default): auto-detect optimal worker count
   - `0`: sequential mode (main thread only)
   - `N > 0`: use exactly N worker processes
+- `--errorfmt {ignore,short,long}` — control how repo analysis errors are displayed.
+- `--table-algo {cell,char}` / `-a {cell,char}` — choose the table width algorithm (ignored for `--format json`).
 
 ### Examples
 
@@ -42,6 +44,27 @@ gitoverit ~/projects --dirty-only --sort author
 
 # Fetch before scanning, output as JSON
 gitoverit ~/projects --fetch --format json
+
+# Use "minimize truncated chars" table layout
+gitoverit ~/projects --table-algo char
+```
+
+## Install (uv tool)
+
+```bash
+uv tool install .
+```
+
+If you re-run `uv tool install .` after changing the code but keeping the same version number, uv may keep the existing tool environment. In that case use:
+
+```bash
+uv tool install --force --reinstall .
+```
+
+For development, you can install in editable mode so changes are reflected without reinstalling:
+
+```bash
+uv tool install -e --force .
 ```
 
 ## Performance

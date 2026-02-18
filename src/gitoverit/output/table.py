@@ -488,7 +488,7 @@ class AutoTable:
         return text
 
     def _render_row(
-        self, cells: list[Text | str], widths: list[int], is_header: bool = False
+        self, cells: Sequence[Text | str], widths: list[int], is_header: bool = False
     ) -> Iterable[Segment]:
         """Render a single row of the table."""
         # Left border

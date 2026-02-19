@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from enum import Enum
 from pathlib import Path
@@ -8,10 +9,11 @@ from typing import Annotated, List, Optional
 
 import typer
 from rich.console import Console
+from simpleeval import DEFAULT_NAMES, SimpleEval
 
 from .output import parse_columns, render_json, render_table
 from .progress import RichHook
-from .reporting import RepoReport, collect_reports_parallel
+from .reporting import RepoReport, collect_reports_parallel, render_status_segments
 
 console = Console()
 
@@ -80,6 +82,11 @@ def cli(
         help="Comma-separated column spec: col to add, -col to remove, - to clear all. "
         "Columns: dir,status,branch,remote,url,ident",
     ),
+    where: Optional[str] = typer.Option(
+        None,
+        "-w", "--where",
+        help="Filter expression. Variables: dir, status, branch, remote, url, ident, dirty.",
+    ),
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
 
@@ -95,6 +102,9 @@ def cli(
 
     _sort_reports(reports, sort=sort, reverse=reverse)
 
+    if where:
+        reports = _filter_reports(reports, where)
+
     columns = parse_columns(columns_spec) if columns_spec else None
 
     if output_format is OutputFormat.JSON:
@@ -102,6 +112,51 @@ def cli(
     else:
         minimize_chars = table_algo is TableAlgo.CHAR
         render_table(console, reports, minimize_chars=minimize_chars, columns=columns)
+
+
+class _RxStr(str):
+    """str subclass with .rx() and .irx() methods for regex matching in --where expressions."""
+
+    def rx(self, pattern: str) -> bool:
+        return bool(re.search(pattern, self))
+
+    def rxi(self, pattern: str) -> bool:
+        return bool(re.search(pattern, self, re.IGNORECASE))
+
+
+def _rx(value: str, pattern: str) -> bool:
+    return bool(re.search(pattern, value))
+
+
+def _rxi(value: str, pattern: str) -> bool:
+    return bool(re.search(pattern, value, re.IGNORECASE))
+
+
+def _report_names(report: RepoReport) -> dict[str, object]:
+    names = dict(DEFAULT_NAMES)
+    names.update(
+        dir=_RxStr(report.display_path),
+        status=_RxStr(render_status_segments(report.status_segments)),
+        branch=_RxStr(report.branch),
+        remote=_RxStr(report.remote),
+        url=_RxStr(report.remote_url),
+        ident=_RxStr(report.ident or ""),
+        dirty=report.dirty,
+    )
+    return names
+
+
+def _filter_reports(reports: list[RepoReport], expr: str) -> list[RepoReport]:
+    evaluator = SimpleEval()
+    evaluator.functions["rx"] = _rx
+    evaluator.functions["rxi"] = _rxi
+    parsed = evaluator.parse(expr)
+    result: list[RepoReport] = []
+    for report in reports:
+        evaluator.names = _report_names(report)
+        if evaluator.eval(expr, previously_parsed=parsed):
+            result.append(report)
+    return result
 
 
 def _sort_reports(reports: List[RepoReport], *, sort: SortMode, reverse: bool) -> None:

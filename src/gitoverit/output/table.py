@@ -629,11 +629,11 @@ def _status_text(report: RepoReport) -> Text:
 DEFAULT_COLUMNS = ["dir", "status", "branch", "remote", "url", "ident"]
 
 _COLUMN_DEFS: dict[str, tuple[str, int]] = {
-    "dir": ("Dir", 5),
-    "status": ("Status", 10),
-    "branch": ("Branch", 5),
-    "remote": ("Remote", 3),
-    "url": ("URL", 3),
+    "dir": ("Dir", 50),
+    "status": ("Status", 1000),
+    "branch": ("Branch", 50),
+    "remote": ("Remote", 30),
+    "url": ("URL", 30),
     "ident": ("Ident", 1),
 }
 

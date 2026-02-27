@@ -4,6 +4,7 @@ import os
 import random
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Iterable, Literal, Sequence
 
 import rich._wrap as rich_wrap
@@ -28,7 +29,7 @@ WidthMode = Literal["fill", "pack"] | int
 class AutoColumn:
     """Column definition for AutoTable."""
 
-    header: str
+    header: str | Text
     style: Style | str | None = None
     priority: int = 1  # Higher = more important, less likely to be truncated
 
@@ -55,7 +56,7 @@ class AutoTable:
     _rows: list[list[Text | str]] = field(default_factory=list)
 
     def add_column(
-        self, header: str, style: Style | str | None = None, priority: int = 1
+        self, header: str | Text, style: Style | str | None = None, priority: int = 1
     ) -> None:
         """Add a column to the table.
 
@@ -82,7 +83,8 @@ class AutoTable:
 
         # Measure headers - header width is the inviolable minimum
         for i, col in enumerate(self._columns):
-            header_width = cell_len(col.header)
+            h = col.header.plain if isinstance(col.header, Text) else col.header
+            header_width = cell_len(h)
             ideal_widths[i] = max(ideal_widths[i], header_width)
             min_widths[i] = max(min_widths[i], header_width)
 
@@ -107,7 +109,8 @@ class AutoTable:
 
         # Count header abbreviation
         for i, col in enumerate(self._columns):
-            if cell_len(col.header) > widths[i]:
+            h = col.header.plain if isinstance(col.header, Text) else col.header
+            if cell_len(h) > widths[i]:
                 counts[i] += 1
 
         # Count data abbreviation
@@ -169,7 +172,8 @@ class AutoTable:
 
     def _get_cell_widths(self, col_idx: int) -> list[int]:
         """Get the widths of all cells in a column (including header)."""
-        widths = [cell_len(self._columns[col_idx].header)]
+        h = self._columns[col_idx].header
+        widths = [cell_len(h.plain if isinstance(h, Text) else h)]
         for row in self._rows:
             if col_idx < len(row):
                 cell = row[col_idx]
@@ -557,7 +561,14 @@ class AutoTable:
             yield Segment("\n")
 
         # Header row
-        headers = [Text(col.header, style="bold") for col in self._columns]
+        def _bold_header(h: str | Text) -> Text:
+            if isinstance(h, str):
+                return Text(h, style="bold")
+            t = h.copy()
+            t.stylize("bold")
+            return t
+
+        headers = [_bold_header(col.header) for col in self._columns]
         yield from self._render_row(headers, content_widths, is_header=True)
 
         # Header separator
@@ -626,16 +637,24 @@ def _status_text(report: RepoReport) -> Text:
     return text
 
 
-DEFAULT_COLUMNS = ["dir", "status", "branch", "remote", "url", "ident"]
+DEFAULT_COLUMNS = ["dir", "status", "branch_remote", "url", "mtime"]
 
-_COLUMN_DEFS: dict[str, tuple[str, int]] = {
+_COLUMN_DEFS: dict[str, tuple[str | Text, int]] = {
     "dir": ("Dir", 50),
     "status": ("Status", 1000),
+    "branch_remote": (Text.assemble("Branch", (":", "color(240)"), "Remote"), 50),
     "branch": ("Branch", 50),
     "remote": ("Remote", 30),
     "url": ("URL", 30),
+    "mtime": ("Modified", 30),
     "ident": ("Ident", 1),
 }
+
+
+def _format_mtime(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _row_value(col: str, report: RepoReport) -> Text | str:
@@ -643,12 +662,20 @@ def _row_value(col: str, report: RepoReport) -> Text | str:
         return report.display_path
     if col == "status":
         return _status_text(report)
+    if col == "branch_remote":
+        t = Text()
+        t.append(report.branch)
+        t.append(":", style="color(240)")
+        t.append(report.remote)
+        return t
     if col == "branch":
         return report.branch
     if col == "remote":
         return report.remote
     if col == "url":
         return report.remote_url
+    if col == "mtime":
+        return _format_mtime(report.latest_mtime)
     if col == "ident":
         return report.ident or "-"
     raise ValueError(f"Unknown column: {col!r}")

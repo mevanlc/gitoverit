@@ -80,12 +80,12 @@ def cli(
         None,
         "-c", "--columns",
         help="Comma-separated column spec: col to add, -col to remove, - to clear all. "
-        "Columns: dir,status,branch,remote,url,ident",
+        "Columns: dir,status,branch_remote,branch,remote,url,mtime,ident",
     ),
     where: Optional[str] = typer.Option(
         None,
         "-w", "--where",
-        help="Filter expression. Variables: dir, status, branch, remote, url, ident, dirty.",
+        help="Filter expression. Variables: dir, status, branch, remote, url, ident, mtime, dirty.",
     ),
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
@@ -133,6 +133,7 @@ def _rxi(value: str, pattern: str) -> bool:
 
 
 def _report_names(report: RepoReport) -> dict[str, object]:
+    mtime = report.latest_mtime or 0.0
     names = dict(DEFAULT_NAMES)
     names.update(
         dir=_RxStr(report.display_path),
@@ -141,6 +142,8 @@ def _report_names(report: RepoReport) -> dict[str, object]:
         remote=_RxStr(report.remote),
         url=_RxStr(report.remote_url),
         ident=_RxStr(report.ident or ""),
+        mtime=mtime,
+        latest_mtime=mtime,
         dirty=report.dirty,
     )
     return names

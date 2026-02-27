@@ -54,6 +54,17 @@ class TableKeyOutputTests(unittest.TestCase):
         output_bang = console_bang.export_text()
         self.assertIn("any of: conflicts", output_bang)
 
+    def test_default_columns_use_branch_remote_and_mtime(self) -> None:
+        console = Console(record=True, width=120)
+        report = self._make_report(status_segments=[("1m", "yellow")])
+
+        render_table(console, [report])
+        output = console.export_text()
+
+        self.assertIn("Branch:Remote", output)
+        self.assertIn("main:-", output)
+        self.assertIn("Modified", output)
+
 
 class AutoTableTests(unittest.TestCase):
     """Tests for the AutoTable layout algorithm."""

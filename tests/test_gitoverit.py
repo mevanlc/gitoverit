@@ -6,9 +6,11 @@ from tempfile import TemporaryDirectory
 
 from git import Actor, Repo
 
+from gitoverit.cli import _filter_reports
 from gitoverit.output.table import DEFAULT_COLUMNS, parse_columns
 from gitoverit.reporting import (
     ParsedStatus,
+    RepoReport,
     discover_repositories,
     has_exceptional_state,
     latest_worktree_mtime,
@@ -96,12 +98,12 @@ class ParseColumnsTests(unittest.TestCase):
         self.assertEqual(parse_columns(""), DEFAULT_COLUMNS)
 
     def test_remove_single(self) -> None:
-        result = parse_columns("-ident")
-        self.assertEqual(result, ["dir", "status", "branch", "remote", "url"])
+        result = parse_columns("-mtime")
+        self.assertEqual(result, ["dir", "status", "branch_remote", "url"])
 
     def test_remove_multiple(self) -> None:
-        result = parse_columns("-ident,-remote")
-        self.assertEqual(result, ["dir", "status", "branch", "url"])
+        result = parse_columns("-mtime,-remote")
+        self.assertEqual(result, ["dir", "status", "branch_remote", "url"])
 
     def test_clear_then_add(self) -> None:
         result = parse_columns("-,url,branch,status,dir")
@@ -110,7 +112,7 @@ class ParseColumnsTests(unittest.TestCase):
     def test_last_mention_wins_readd(self) -> None:
         # Remove then re-add → included, appended at end
         result = parse_columns("-dir,dir")
-        self.assertEqual(result, ["status", "branch", "remote", "url", "ident", "dir"])
+        self.assertEqual(result, ["status", "branch_remote", "url", "mtime", "dir"])
 
     def test_last_mention_wins_remove(self) -> None:
         # Add then remove → excluded
@@ -120,7 +122,13 @@ class ParseColumnsTests(unittest.TestCase):
     def test_add_moves_to_end(self) -> None:
         # Mentioning an existing column moves it to the end
         result = parse_columns("dir")
-        self.assertEqual(result, ["status", "branch", "remote", "url", "ident", "dir"])
+        self.assertEqual(result, ["status", "branch_remote", "url", "mtime", "dir"])
+
+    def test_non_default_columns_can_be_added(self) -> None:
+        result = parse_columns("branch,remote")
+        self.assertEqual(
+            result, ["dir", "status", "branch_remote", "url", "mtime", "branch", "remote"]
+        )
 
     def test_unknown_column_raises(self) -> None:
         with self.assertRaises(ValueError):
@@ -192,6 +200,37 @@ class DiscoverRepositoriesTests(unittest.TestCase):
             resolved_paths = [p.resolve() for p in discovered]
             self.assertIn(parent.resolve(), resolved_paths)
             self.assertNotIn(vendor_lib.resolve(), resolved_paths)
+
+
+class FilterReportsTests(unittest.TestCase):
+    def test_mtime_available_in_where_expression(self) -> None:
+        old_report = RepoReport(
+            path=Path("/tmp/old"),
+            display_path="old",
+            fetch_failed=False,
+            status_segments=[],
+            branch="main",
+            remote="-",
+            remote_url="-",
+            ident=None,
+            dirty=False,
+            latest_mtime=1.0,
+        )
+        new_report = RepoReport(
+            path=Path("/tmp/new"),
+            display_path="new",
+            fetch_failed=False,
+            status_segments=[],
+            branch="main",
+            remote="-",
+            remote_url="-",
+            ident=None,
+            dirty=False,
+            latest_mtime=100.0,
+        )
+
+        filtered = _filter_reports([old_report, new_report], "mtime > 10")
+        self.assertEqual([report.display_path for report in filtered], ["new"])
 
 
 if __name__ == "__main__":

@@ -164,7 +164,7 @@ def _filter_reports(reports: list[RepoReport], expr: str) -> list[RepoReport]:
 
 def _sort_reports(reports: List[RepoReport], *, sort: SortMode, reverse: bool) -> None:
     if sort is SortMode.MTIME:
-        reports.sort(key=lambda report: report.latest_mtime or 0.0, reverse=not reverse)
+        reports.sort(key=lambda report: report.latest_mtime or 0.0, reverse=reverse)
     elif sort is SortMode.AUTHOR:
         reports.sort(
             key=lambda report: (report.ident or "").lower(),

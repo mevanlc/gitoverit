@@ -28,6 +28,11 @@ class RepoReport:
     ident: str | None
     dirty: bool
     latest_mtime: float | None
+    ahead: int = 0
+    behind: int = 0
+    modified: int = 0
+    untracked: int = 0
+    deleted: int = 0
 
     def status_text(self) -> Text:
         if not self.status_segments:
@@ -307,8 +312,6 @@ def analyze_repository(path: Path, fetch: bool) -> RepoReport:
         or deletions
         or parsed.untracked_count
         or parsed.deleted_count
-        or ahead
-        or behind
         or exceptional
     )
 
@@ -327,6 +330,11 @@ def analyze_repository(path: Path, fetch: bool) -> RepoReport:
         ident=ident,
         dirty=dirty,
         latest_mtime=latest_mtime,
+        ahead=ahead,
+        behind=behind,
+        modified=parsed.modified_count,
+        untracked=parsed.untracked_count,
+        deleted=parsed.deleted_count,
     )
 
 

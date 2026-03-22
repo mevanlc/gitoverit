@@ -40,6 +40,100 @@ class TableAlgo(str, Enum):
     CHAR = "char"
 
 
+_WHERE_HELP = """\
+Filter expressions for --where / -w
+
+  Expressions use Python-like syntax to filter which repositories appear
+  in the output.  Each expression is evaluated per repo; rows where the
+  expression is falsy are excluded.
+
+VARIABLES
+
+  Strings:
+    path     Absolute path of the repository
+    dir      Display path of the repository (relative to cwd)
+    status   Rendered status text, e.g. "3m 1u 2↑" or "clean"
+    branch   Current branch name, e.g. "main"
+    remote   Tracking remote ref, e.g. "origin/main", or "-"
+    url      Simplified remote URL, or "-"
+    ident    Git committer identity, e.g. "Alice <alice@x.co>", or ""
+
+  Numbers:
+    mtime      Latest worktree modification time as epoch float, or 0.0
+    ahead      Commits ahead of tracking branch
+    behind     Commits behind tracking branch
+    modified   Count of modified files
+    untracked  Count of untracked files
+    deleted    Count of deleted files
+
+  Booleans:
+    dirty    True if the repo has uncommitted local changes
+
+OPERATORS
+
+  ==  !=  <  <=  >  >=    Comparisons
+  and  or  not            Boolean logic
+  in                      Substring / membership test
+  +                       String concatenation (on strings)
+
+  Parentheses for grouping: (a or b) and c
+
+STRING METHODS
+
+  String variables support .rx() and .rxi() for regex matching:
+
+    .rx(pattern)     Regex search (case-sensitive), returns bool
+    .rxi(pattern)    Regex search (case-insensitive), returns bool
+
+  Standard Python str methods also work: .startswith(), .endswith(),
+  .lower(), .upper(), .strip(), etc.
+
+FUNCTIONS
+
+  rx(string, pattern)    Regex search (case-sensitive)
+  rxi(string, pattern)   Regex search (case-insensitive)
+
+EXAMPLES
+
+  Show only dirty repos:              'dirty'
+  Clean repos only:                   'not dirty'
+  Repos on a non-main branch:         'branch != "main"'
+  Repos with unpushed commits:        'ahead > 0'
+  Repos that are behind:              'behind > 0'
+  Repos with untracked files:         'untracked > 0'
+  Repos with no remote tracking:      'remote == "-"'
+  Directory prefix:                   'dir.startswith("work/")'
+  URL contains "myorg":               '"myorg" in url'
+  Feature branch (regex):             'branch.rx("^feature/")'
+  Branch starts with release
+    or hotfix:                        'branch.rx("^(release|hotfix)")'
+  Author match
+    (case-insensitive regex):         'ident.rxi("alice")'
+  Combine conditions,
+    dirty repos not on main:          'dirty and branch != "main"'
+  Recent mtime (epoch seconds,
+    use `date +%s` for current):      'mtime > 1742500000'
+
+NOTES
+
+  Expressions are evaluated with simpleeval (sandboxed). Standard
+  Python builtins are not available; use the variables and functions
+  listed above.
+
+  The --where filter runs after --dirty-only and sorting, so all
+  three can be combined.
+
+  The --print / -p option uses the same variables and expression
+  language to evaluate and print a value per repo.
+"""
+
+
+def _show_help_where(value: bool) -> None:
+    if value:
+        typer.echo(_WHERE_HELP, color=False)
+        raise typer.Exit()
+
+
 @APP.command()
 def cli(
     dirs: Annotated[List[Path], typer.Argument(
@@ -52,7 +146,7 @@ def cli(
         OutputFormat.TABLE, "-o", "--format", case_sensitive=False, help="Choose output format."
     ),
     dirty_only: bool = typer.Option(
-        False, "-d", "--dirty-only", help="Display only repositories with local or remote changes."
+        False, "-d", "--dirty-only", help="Display only repositories with uncommitted local changes."
     ),
     sort: SortMode = typer.Option(
         SortMode.MTIME,
@@ -67,8 +161,19 @@ def cli(
     ),
     parallel: Optional[int] = typer.Option(
         None,
-        "-p", "--parallel",
+        "--parallel",
         help="Number of parallel workers (default: auto-detect, 0 = sequential mode)"
+    ),
+    print_expr: Optional[str] = typer.Option(
+        None,
+        "-p", "--print",
+        help="Evaluate expression per repo and print results, one per line. "
+        "Same variables as --where, plus path.",
+    ),
+    print0: bool = typer.Option(
+        False,
+        "-0", "--print0",
+        help="With --print, use null bytes instead of newlines as delimiters.",
     ),
     table_algo: TableAlgo = typer.Option(
         TableAlgo.CELL,
@@ -85,7 +190,15 @@ def cli(
     where: Optional[str] = typer.Option(
         None,
         "-w", "--where",
-        help="Filter expression. Variables: dir, status, branch, remote, url, ident, mtime, dirty.",
+        help="Filter expression. Variables: path, dir, status, branch, remote, url, ident, mtime, "
+        "dirty, ahead, behind, modified, untracked, deleted.",
+    ),
+    _help_where: Optional[bool] = typer.Option(
+        None,
+        "--help-where",
+        callback=_show_help_where,
+        is_eager=True,
+        help="Show detailed help for --where filter expressions and exit.",
     ),
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
@@ -104,6 +217,10 @@ def cli(
 
     if where:
         reports = _filter_reports(reports, where)
+
+    if print_expr is not None:
+        _print_reports(reports, print_expr, null_delimited=print0)
+        return
 
     columns = parse_columns(columns_spec) if columns_spec else None
 
@@ -136,6 +253,7 @@ def _report_names(report: RepoReport) -> dict[str, object]:
     mtime = report.latest_mtime or 0.0
     names = dict(DEFAULT_NAMES)
     names.update(
+        path=_RxStr(str(report.path)),
         dir=_RxStr(report.display_path),
         status=_RxStr(render_status_segments(report.status_segments)),
         branch=_RxStr(report.branch),
@@ -145,6 +263,11 @@ def _report_names(report: RepoReport) -> dict[str, object]:
         mtime=mtime,
         latest_mtime=mtime,
         dirty=report.dirty,
+        ahead=report.ahead,
+        behind=report.behind,
+        modified=report.modified,
+        untracked=report.untracked,
+        deleted=report.deleted,
     )
     return names
 
@@ -160,6 +283,21 @@ def _filter_reports(reports: list[RepoReport], expr: str) -> list[RepoReport]:
         if evaluator.eval(expr, previously_parsed=parsed):
             result.append(report)
     return result
+
+
+def _print_reports(
+    reports: list[RepoReport], expr: str, *, null_delimited: bool
+) -> None:
+    evaluator = SimpleEval()
+    evaluator.functions["rx"] = _rx
+    evaluator.functions["rxi"] = _rxi
+    parsed = evaluator.parse(expr)
+    end = "\0" if null_delimited else "\n"
+    for report in reports:
+        evaluator.names = _report_names(report)
+        value = evaluator.eval(expr, previously_parsed=parsed)
+        sys.stdout.write(f"{value}{end}")
+    sys.stdout.flush()
 
 
 def _sort_reports(reports: List[RepoReport], *, sort: SortMode, reverse: bool) -> None:

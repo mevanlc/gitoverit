@@ -18,6 +18,11 @@ def render_json(reports: Sequence[RepoReport]) -> str:
             "remote_url": report.remote_url,
             "ident": report.ident,
             "dirty": report.dirty,
+            "ahead": report.ahead,
+            "behind": report.behind,
+            "modified": report.modified,
+            "untracked": report.untracked,
+            "deleted": report.deleted,
             "mtime": report.latest_mtime,
             "latest_mtime": report.latest_mtime,
         }

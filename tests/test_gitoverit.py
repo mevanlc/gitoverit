@@ -1,3 +1,4 @@
+import io
 import os
 import time
 import unittest
@@ -6,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 from git import Actor, Repo
 
-from gitoverit.cli import _filter_reports
+from gitoverit.cli import _filter_reports, _print_reports
 from gitoverit.output.table import DEFAULT_COLUMNS, parse_columns
 from gitoverit.reporting import (
     ParsedStatus,
@@ -231,6 +232,131 @@ class FilterReportsTests(unittest.TestCase):
 
         filtered = _filter_reports([old_report, new_report], "mtime > 10")
         self.assertEqual([report.display_path for report in filtered], ["new"])
+
+    def _make_report(self, **kwargs: object) -> RepoReport:
+        defaults: dict[str, object] = dict(
+            path=Path("/tmp/repo"),
+            display_path="repo",
+            fetch_failed=False,
+            status_segments=[],
+            branch="main",
+            remote="-",
+            remote_url="-",
+            ident=None,
+            dirty=False,
+            latest_mtime=None,
+        )
+        defaults.update(kwargs)
+        return RepoReport(**defaults)  # type: ignore[arg-type]
+
+    def test_filter_ahead_behind(self) -> None:
+        ahead_report = self._make_report(display_path="ahead", ahead=3)
+        behind_report = self._make_report(display_path="behind", behind=2)
+        clean_report = self._make_report(display_path="clean")
+
+        filtered = _filter_reports(
+            [ahead_report, behind_report, clean_report], "ahead > 0"
+        )
+        self.assertEqual([r.display_path for r in filtered], ["ahead"])
+
+        filtered = _filter_reports(
+            [ahead_report, behind_report, clean_report], "behind > 0"
+        )
+        self.assertEqual([r.display_path for r in filtered], ["behind"])
+
+    def test_filter_modified_untracked_deleted(self) -> None:
+        reports = [
+            self._make_report(display_path="mod", modified=5),
+            self._make_report(display_path="unt", untracked=3),
+            self._make_report(display_path="del", deleted=1),
+            self._make_report(display_path="clean"),
+        ]
+
+        filtered = _filter_reports(reports, "modified > 0")
+        self.assertEqual([r.display_path for r in filtered], ["mod"])
+
+        filtered = _filter_reports(reports, "untracked > 0")
+        self.assertEqual([r.display_path for r in filtered], ["unt"])
+
+        filtered = _filter_reports(reports, "deleted > 0")
+        self.assertEqual([r.display_path for r in filtered], ["del"])
+
+    def test_filter_path_variable(self) -> None:
+        reports = [
+            self._make_report(display_path="a", path=Path("/home/user/a")),
+            self._make_report(display_path="b", path=Path("/home/user/b")),
+        ]
+        filtered = _filter_reports(reports, 'path.endswith("/a")')
+        self.assertEqual([r.display_path for r in filtered], ["a"])
+
+    def test_dirty_excludes_ahead_behind(self) -> None:
+        """dirty should be False when only ahead/behind are set."""
+        report = self._make_report(ahead=5, behind=2)
+        self.assertFalse(report.dirty)
+
+
+class PrintReportsTests(unittest.TestCase):
+    def _make_report(self, **kwargs: object) -> RepoReport:
+        defaults: dict[str, object] = dict(
+            path=Path("/tmp/repo"),
+            display_path="repo",
+            fetch_failed=False,
+            status_segments=[],
+            branch="main",
+            remote="-",
+            remote_url="-",
+            ident=None,
+            dirty=False,
+            latest_mtime=None,
+        )
+        defaults.update(kwargs)
+        return RepoReport(**defaults)  # type: ignore[arg-type]
+
+    def test_print_path(self) -> None:
+        reports = [
+            self._make_report(path=Path("/home/user/a")),
+            self._make_report(path=Path("/home/user/b")),
+        ]
+        buf = io.StringIO()
+        import sys
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            _print_reports(reports, "path", null_delimited=False)
+        finally:
+            sys.stdout = old_stdout
+        self.assertEqual(buf.getvalue(), "/home/user/a\n/home/user/b\n")
+
+    def test_print_null_delimited(self) -> None:
+        reports = [
+            self._make_report(path=Path("/a")),
+            self._make_report(path=Path("/b")),
+        ]
+        buf = io.StringIO()
+        import sys
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            _print_reports(reports, "path", null_delimited=True)
+        finally:
+            sys.stdout = old_stdout
+        self.assertEqual(buf.getvalue(), "/a\0/b\0")
+
+    def test_print_compound_expression(self) -> None:
+        reports = [
+            self._make_report(
+                path=Path("/repo"), branch="feature/x", display_path="repo"
+            ),
+        ]
+        buf = io.StringIO()
+        import sys
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            _print_reports(reports, 'branch + ":" + dir', null_delimited=False)
+        finally:
+            sys.stdout = old_stdout
+        self.assertEqual(buf.getvalue(), "feature/x:repo\n")
 
 
 if __name__ == "__main__":

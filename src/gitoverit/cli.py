@@ -5,6 +5,7 @@ import re
 import sys
 from enum import Enum
 from pathlib import Path
+from traceback import TracebackException
 from typing import Annotated, List, Optional
 
 import typer
@@ -12,7 +13,7 @@ from rich.console import Console
 from simpleeval import DEFAULT_NAMES, SimpleEval
 
 from .output import parse_columns, render_json, render_table
-from .progress import RichHook
+from .progress import RichHook, SilentHook
 from .reporting import RepoReport, collect_reports_parallel, render_status_segments
 
 console = Console()
@@ -193,6 +194,11 @@ def cli(
         help="Filter expression. Variables: path, dir, status, branch, remote, url, ident, mtime, "
         "dirty, ahead, behind, modified, untracked, deleted.",
     ),
+    show_errors: bool = typer.Option(
+        False,
+        "--errors",
+        help="Print error details to stderr after all output is complete.",
+    ),
     _help_where: Optional[bool] = typer.Option(
         None,
         "--help-where",
@@ -203,7 +209,12 @@ def cli(
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
 
-    hook = RichHook(console) if _stdout_is_tty() else None
+    if _stdout_is_tty():
+        hook = RichHook(console)
+    elif show_errors:
+        hook = SilentHook()
+    else:
+        hook = None
 
     reports = collect_reports_parallel(
         dirs,
@@ -220,15 +231,15 @@ def cli(
 
     if print_expr is not None:
         _print_reports(reports, print_expr, null_delimited=print0)
-        return
-
-    columns = parse_columns(columns_spec) if columns_spec else None
-
-    if output_format is OutputFormat.JSON:
+    elif output_format is OutputFormat.JSON:
         typer.echo(render_json(reports))
     else:
+        columns = parse_columns(columns_spec) if columns_spec else None
         minimize_chars = table_algo is TableAlgo.CHAR
         render_table(console, reports, minimize_chars=minimize_chars, columns=columns)
+
+    if show_errors and hook:
+        _emit_errors(hook.get_errors())
 
 
 class _RxStr(str):
@@ -310,6 +321,20 @@ def _sort_reports(reports: List[RepoReport], *, sort: SortMode, reverse: bool) -
         )
     elif reverse:
         reports.reverse()
+
+
+def _emit_errors(errors: list[tuple[Path, TracebackException | None]]) -> None:
+    if not errors:
+        return
+    stderr = Console(stderr=True, highlight=False)
+    stderr.print(f"\n[bold red]{len(errors)} error(s) during statusing:[/bold red]")
+    for path, tb in errors:
+        stderr.print(f"\n[bold]{path}[/bold]")
+        if tb is not None:
+            for line in tb.format():
+                stderr.print(line, end="")
+        else:
+            stderr.print("  (no traceback available)")
 
 
 def _stdout_is_tty() -> bool:

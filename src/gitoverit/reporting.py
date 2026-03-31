@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from traceback import TracebackException
@@ -144,7 +144,7 @@ def collect_reports_parallel(
         max_pending = max(1, worker_count * 4)
 
         discovery_finished = False
-        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
             repo_iter = iter(discover_repositories(dirs))
             futures: dict[Future[RepoReport], Path] = {}
 
@@ -267,12 +267,17 @@ def analyze_repository(path: Path, fetch: bool) -> RepoReport:
     fetch_failed = False
 
     if fetch and repo.remotes:
-        for remote in repo.remotes:
-            try:
-                remote.fetch()
-            except GitCommandError:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(path), "fetch", "--all"],
+                capture_output=True,
+                timeout=60,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            if result.returncode != 0:
                 fetch_failed = True
-                break
+        except (subprocess.TimeoutExpired, OSError):
+            fetch_failed = True
 
     status = repo.git.status("--porcelain")
     parsed = parse_status_porcelain(status)

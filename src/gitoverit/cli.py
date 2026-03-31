@@ -162,7 +162,7 @@ def cli(
     ),
     parallel: Optional[int] = typer.Option(
         None,
-        "-j", "--jobs",
+        "--parallel",
         help="Number of parallel workers (default: auto-detect, 0 = sequential mode)"
     ),
     print_expr: Optional[str] = typer.Option(

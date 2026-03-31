@@ -654,7 +654,7 @@ _COLUMN_DEFS: dict[str, tuple[str | Text, int]] = {
 def _format_mtime(value: float | None) -> str:
     if value is None:
         return "-"
-    return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
 
 
 def _row_value(col: str, report: RepoReport) -> Text | str:

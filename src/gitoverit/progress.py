@@ -109,10 +109,10 @@ class RichHook(HookProtocol):
         )
         self.progress.__enter__()
         self.discovery_task_id: TaskID | None = self.progress.add_task(
-            "[cyan]Repo discovery", total=None
+            "[cyan]Discovery", total=None
         )
         self.status_task_id: TaskID | None = self.progress.add_task(
-            "[cyan]Repo statusing", total=1, visible=False
+            "[cyan]Statusing", total=1, visible=False
         )
         self.discovered_count = 0
         self.discovery_finished = False
@@ -127,7 +127,7 @@ class RichHook(HookProtocol):
         self.discovered_count += 1
         if self.discovery_task_id is not None:
             description = (
-                f"[cyan]Repo discovery ({self.discovered_count})"
+                f"[cyan]Discovery ({self.discovered_count})"
             )
             self.progress.update(self.discovery_task_id, description=description)
 
@@ -154,7 +154,7 @@ class RichHook(HookProtocol):
             self.discovery_task_id,
             total=self.discovered_count,
             completed=self.discovered_count,
-            description=f"[green]Repo discovery done ({self.discovered_count})",
+            description=f"[green]Discovery done ({self.discovered_count})",
         )
 
     def start_collect(self, total: int) -> None:
@@ -164,7 +164,7 @@ class RichHook(HookProtocol):
 
         if self.status_task_id is None:
             self.status_task_id = self.progress.add_task(
-                "[cyan]Repo statusing", total=max(effective_total, 1), visible=effective_total > 0
+                "[cyan]Statusing", total=max(effective_total, 1), visible=effective_total > 0
             )
             return
 
@@ -187,7 +187,7 @@ class RichHook(HookProtocol):
         error_text = (
             f" [red]({self.error_count} errors)[/red]" if self.error_count > 0 else ""
         )
-        description = f"[cyan]Repo statusing: {display_name}{error_text}"
+        description = f"[cyan]Statusing: {display_name}{error_text}"
         self.progress.update(
             self.status_task_id,
             total=max(effective_total, 1),

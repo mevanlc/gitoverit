@@ -5,7 +5,7 @@ import random
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Iterable, Literal, Sequence
+from typing import Callable, Iterable, Literal, Sequence
 
 import rich._wrap as rich_wrap
 import rich.box as box
@@ -25,11 +25,85 @@ rich_wrap.re_word = re.compile(r"[^\S\u00A0]*[\S\u00A0]+[^\S\u00A0]*")
 WidthMode = Literal["fill", "pack"] | int
 
 
+@dataclass(frozen=True)
+class ResponsiveCell:
+    """A cell that describes how it prefers to shorten itself when space is tight.
+
+    `variants` is an ordered tuple of pre-rendered Texts, widest → narrowest.
+    Layout picks the widest variant that fits the allocated width; if even the
+    narrowest is wider than the allocation, layout falls back to ellipsis-
+    truncating it.
+
+    `refuses` records the cell's preference when no variant fits:
+    - "truncate" (default) — let the layout ellipsis-truncate the narrowest.
+    - "drop"              — prefer to be dropped entirely. Recorded only;
+                            column dropping is intentionally unimplemented for
+                            now (tech debt — see plan).
+    """
+
+    variants: tuple[Text, ...]
+    refuses: str = "truncate"
+
+    def __post_init__(self) -> None:
+        if not self.variants:
+            raise ValueError("ResponsiveCell needs at least one variant")
+        object.__setattr__(
+            self, "_widths", tuple(cell_len(v.plain) for v in self.variants)
+        )
+
+    @property
+    def widths(self) -> tuple[int, ...]:
+        return self._widths  # type: ignore[attr-defined]
+
+    @property
+    def max_width(self) -> int:
+        return self._widths[0]  # type: ignore[attr-defined]
+
+    @property
+    def min_width(self) -> int:
+        return self._widths[-1]  # type: ignore[attr-defined]
+
+    def render_at(self, width: int) -> Text:
+        """Widest variant whose width is <= `width`. Falls back to narrowest."""
+        for variant, w in zip(self.variants, self._widths):  # type: ignore[attr-defined]
+            if w <= width:
+                return variant
+        return self.variants[-1]
+
+    def effective_width(self, width: int) -> int:
+        """Width of content actually displayed at the given allocation.
+
+        If the widest fitting variant is wider than `width` (i.e. even the
+        narrowest variant overflows), layout ellipsis-truncates to `width` —
+        so the displayed width is `width`, not the variant's natural width.
+        Getting this right matters: the optimizer uses the delta of
+        effective_width across breakpoints as the "benefit" of allocating
+        more space. If this function reported the natural width, single-
+        variant cells would appear to gain nothing from widening.
+        """
+        for w in self._widths:  # type: ignore[attr-defined]
+            if w <= width:
+                return w
+        return min(self._widths[-1], width)  # type: ignore[attr-defined]
+
+
+def _as_responsive(value: "ResponsiveCell | Text | str") -> ResponsiveCell:
+    """Wrap plain str/Text cells as single-variant ResponsiveCells.
+
+    Single-variant cells render identically to the pre-responsive behaviour.
+    """
+    if isinstance(value, ResponsiveCell):
+        return value
+    if isinstance(value, Text):
+        return ResponsiveCell(variants=(value,))
+    return ResponsiveCell(variants=(Text(str(value)),))
+
+
 @dataclass
 class AutoColumn:
     """Column definition for AutoTable."""
 
-    header: str | Text
+    header: ResponsiveCell
     style: Style | str | None = None
     priority: int = 1  # Higher = more important, less likely to be truncated
 
@@ -53,75 +127,71 @@ class AutoTable:
     minimize_chars: bool = False  # False = minimize cells (strategic), True = minimize chars (spread)
 
     _columns: list[AutoColumn] = field(default_factory=list)
-    _rows: list[list[Text | str]] = field(default_factory=list)
+    _rows: list[list[ResponsiveCell]] = field(default_factory=list)
 
     def add_column(
-        self, header: str | Text, style: Style | str | None = None, priority: int = 1
+        self,
+        header: "ResponsiveCell | Text | str",
+        style: Style | str | None = None,
+        priority: int = 1,
     ) -> None:
         """Add a column to the table.
 
         Args:
-            header: Column header text.
+            header: Column header (plain str/Text or a ResponsiveCell ladder).
             style: Optional style for the column.
             priority: Importance weight (higher = protect from truncation).
         """
-        self._columns.append(AutoColumn(header=header, style=style, priority=priority))
+        self._columns.append(
+            AutoColumn(header=_as_responsive(header), style=style, priority=priority)
+        )
 
-    def add_row(self, *cells: Text | str) -> None:
-        """Add a row to the table."""
-        self._rows.append(list(cells))
+    def add_row(self, *cells: "ResponsiveCell | Text | str") -> None:
+        """Add a row to the table. Cells may be plain str/Text or ResponsiveCell."""
+        self._rows.append([_as_responsive(c) for c in cells])
+
+    def _column_cells(self, col_idx: int) -> list[ResponsiveCell]:
+        """All ResponsiveCells in a column, header first."""
+        cells: list[ResponsiveCell] = [self._columns[col_idx].header]
+        for row in self._rows:
+            if col_idx < len(row):
+                cells.append(row[col_idx])
+        return cells
 
     def _measure_columns(self) -> tuple[list[int], list[int]]:
         """Measure ideal and minimum widths for each column.
 
-        Returns:
-            (ideal_widths, min_widths) - lists of widths per column.
+        Ideal = widest variant across cells + header.
+        Min   = the hard floor below which the optimizer won't allocate. That's
+                the header's narrowest variant, floored at `self.min_col_width`.
+                Data cells below their narrowest variant get ellipsis-truncated
+                — we trust them not to ask for more floor than the header does.
+                (Responsive data cells still influence allocation via their
+                variant widths, which the optimizer treats as breakpoints.)
         """
         num_cols = len(self._columns)
         ideal_widths = [0] * num_cols
         min_widths = [self.min_col_width] * num_cols
 
-        # Measure headers - header width is the inviolable minimum
         for i, col in enumerate(self._columns):
-            h = col.header.plain if isinstance(col.header, Text) else col.header
-            header_width = cell_len(h)
-            ideal_widths[i] = max(ideal_widths[i], header_width)
-            min_widths[i] = max(min_widths[i], header_width)
-
-        # Measure all cells
-        for row in self._rows:
-            for i, cell in enumerate(row):
-                if i >= num_cols:
-                    break
-                text = cell.plain if isinstance(cell, Text) else str(cell)
-                width = cell_len(text)
-                ideal_widths[i] = max(ideal_widths[i], width)
+            min_widths[i] = max(min_widths[i], col.header.min_width)
+            for cell in self._column_cells(i):
+                ideal_widths[i] = max(ideal_widths[i], cell.max_width)
 
         return ideal_widths, min_widths
 
     def _count_abbreviated(self, widths: list[int]) -> list[int]:
-        """Count how many cells in each column would be abbreviated at given widths.
+        """Count cells per column not rendering at their widest variant.
 
-        Includes headers in the count.
+        Includes headers. A cell is "abbreviated" iff the allocated width is
+        smaller than its widest variant.
         """
         num_cols = len(self._columns)
         counts = [0] * num_cols
-
-        # Count header abbreviation
-        for i, col in enumerate(self._columns):
-            h = col.header.plain if isinstance(col.header, Text) else col.header
-            if cell_len(h) > widths[i]:
-                counts[i] += 1
-
-        # Count data abbreviation
-        for row in self._rows:
-            for i, cell in enumerate(row):
-                if i >= num_cols:
-                    break
-                text = cell.plain if isinstance(cell, Text) else str(cell)
-                if cell_len(text) > widths[i]:
+        for i in range(num_cols):
+            for cell in self._column_cells(i):
+                if cell.max_width > widths[i]:
                     counts[i] += 1
-
         return counts
 
     def _calculate_chrome_width(self, num_cols: int) -> int:
@@ -170,33 +240,33 @@ class AutoTable:
 
         return widths
 
-    def _get_cell_widths(self, col_idx: int) -> list[int]:
-        """Get the widths of all cells in a column (including header)."""
-        h = self._columns[col_idx].header
-        widths = [cell_len(h.plain if isinstance(h, Text) else h)]
-        for row in self._rows:
-            if col_idx < len(row):
-                cell = row[col_idx]
-                text = cell.plain if isinstance(cell, Text) else str(cell)
-                widths.append(cell_len(text))
-        return widths
-
     def _count_truncated_chars(self, widths: list[int]) -> int:
-        """Total characters truncated across all cells."""
+        """Total chars hidden across all cells (max_width - effective_width)."""
         total = 0
         for col_idx, width in enumerate(widths):
-            for cell_width in self._get_cell_widths(col_idx):
-                if cell_width > width:
-                    total += cell_width - width
+            for cell in self._column_cells(col_idx):
+                total += max(0, cell.max_width - cell.effective_width(width))
         return total
 
-    def _marginal_benefit_chars(self, col_idx: int, current_width: int) -> int:
-        """How many characters of truncation would be saved by +1 width?
+    def _column_breakpoints(self, col_idx: int, above: int = 0) -> list[int]:
+        """Sorted unique variant widths across cells in this column, strictly above `above`."""
+        seen: set[int] = set()
+        for cell in self._column_cells(col_idx):
+            for w in cell.widths:
+                if w > above:
+                    seen.add(w)
+        return sorted(seen)
 
-        Equal to the count of cells still abbreviated (each saves 1 char).
+    def _effective_priority(self, col_idx: int, current_width: int) -> float:
+        """Base priority bumped by how many variant steps the column has shed.
+
+        A column that's already narrowed further weighs more, so the optimizer
+        prefers giving width back to it over further narrowing a healthier
+        column. Linear bump: `base * (1 + steps_down)`.
         """
-        cell_widths = self._get_cell_widths(col_idx)
-        return sum(1 for w in cell_widths if w > current_width)
+        base = self._columns[col_idx].priority
+        steps = len(self._column_breakpoints(col_idx, above=current_width))
+        return base * (1 + steps)
 
     def _optimize_widths_greedy(
         self,
@@ -218,10 +288,11 @@ class AutoTable:
             return self._optimize_greedy_cells(available, min_widths)
 
     def _optimize_greedy_chars(self, available: int, min_widths: list[int]) -> list[int]:
-        """Minimize total (priority-weighted) characters truncated.
+        """Minimize total (priority-weighted) characters hidden.
 
-        Greedy: give +1 to whichever column has the highest weighted benefit
-        (abbreviated cells * priority).
+        Greedy: give +1 to whichever column has the highest weighted benefit.
+        Benefit = cells not yet rendering at their widest variant, weighted by
+        effective priority (which bumps with how narrow the column already is).
         """
         num_cols = len(min_widths)
         widths = list(min_widths)
@@ -230,24 +301,23 @@ class AutoTable:
         if budget <= 0:
             return widths
 
-        # Precompute all cell widths and priorities
-        all_cell_widths = [self._get_cell_widths(i) for i in range(num_cols)]
-        priorities = [self._columns[i].priority for i in range(num_cols)]
+        column_cells = [self._column_cells(i) for i in range(num_cols)]
 
         for _ in range(budget):
             best_col = -1
-            best_benefit = 0
+            best_benefit = 0.0
 
-            for col_idx, cell_widths in enumerate(all_cell_widths):
-                # Benefit = count of cells still abbreviated * priority
-                raw_benefit = sum(1 for w in cell_widths if w > widths[col_idx])
-                benefit = raw_benefit * priorities[col_idx]
+            for col_idx, cells in enumerate(column_cells):
+                raw_benefit = sum(1 for cell in cells if cell.max_width > widths[col_idx])
+                if raw_benefit == 0:
+                    continue
+                benefit = raw_benefit * self._effective_priority(col_idx, widths[col_idx])
                 if benefit > best_benefit:
                     best_benefit = benefit
                     best_col = col_idx
 
             if best_col == -1 or best_benefit == 0:
-                break  # Nothing more to improve
+                break
 
             widths[best_col] += 1
 
@@ -256,8 +326,10 @@ class AutoTable:
     def _optimize_greedy_cells(self, available: int, min_widths: list[int]) -> list[int]:
         """Minimize count of (priority-weighted) truncated cells.
 
-        Greedy: jump to breakpoints (cell widths), picking best cost/benefit ratio.
-        Priority is factored into the benefit calculation.
+        Greedy: jump to the next variant breakpoint, picking best benefit/cost
+        ratio. Benefit = cells that jump to a wider variant at that breakpoint,
+        weighted by effective priority. Variants let columns step through
+        multiple breakpoints instead of the old single-width-per-cell model.
         """
         num_cols = len(min_widths)
         widths = list(min_widths)
@@ -266,36 +338,32 @@ class AutoTable:
         if budget <= 0:
             return widths
 
-        # Precompute all cell widths and priorities
-        all_cell_widths = [self._get_cell_widths(i) for i in range(num_cols)]
-        priorities = [self._columns[i].priority for i in range(num_cols)]
+        column_cells = [self._column_cells(i) for i in range(num_cols)]
 
         while budget > 0:
             best_col = -1
-            best_ratio = 0.0  # weighted benefit per unit cost
+            best_ratio = 0.0
             best_cost = 0
-            best_benefit = 0
+            best_benefit = 0.0
 
-            for col_idx, cell_widths in enumerate(all_cell_widths):
+            for col_idx, cells in enumerate(column_cells):
                 current = widths[col_idx]
-                # Find the next breakpoint: smallest cell width > current
-                abbreviated = [w for w in cell_widths if w > current]
-                if not abbreviated:
-                    continue  # All cells fit, no benefit
-
-                next_breakpoint = min(abbreviated)
+                breakpoints_above = self._column_breakpoints(col_idx, above=current)
+                if not breakpoints_above:
+                    continue
+                next_breakpoint = breakpoints_above[0]
                 cost = next_breakpoint - current
-
                 if cost > budget:
-                    continue  # Can't afford this jump
-
-                # Benefit: cells un-abbreviated * priority
-                raw_benefit = sum(1 for w in cell_widths if w == next_breakpoint)
-                benefit = raw_benefit * priorities[col_idx]
-
-                # Ratio: weighted benefit per unit of width spent
-                ratio = benefit / cost if cost > 0 else 0
-
+                    continue
+                raw_benefit = sum(
+                    1
+                    for cell in cells
+                    if cell.effective_width(next_breakpoint) > cell.effective_width(current)
+                )
+                if raw_benefit == 0:
+                    continue
+                benefit = raw_benefit * self._effective_priority(col_idx, current)
+                ratio = benefit / cost if cost > 0 else 0.0
                 if ratio > best_ratio or (ratio == best_ratio and benefit > best_benefit):
                     best_ratio = ratio
                     best_col = col_idx
@@ -303,10 +371,12 @@ class AutoTable:
                     best_benefit = benefit
 
             if best_col == -1:
-                # No affordable improvements, distribute remainder to abbreviated cols
+                # No affordable breakpoint — spread remainder round-robin across
+                # columns that still have abbreviated cells so they at least
+                # have a chance to reach the next variant.
                 abbreviated_cols = [
                     i for i in range(num_cols)
-                    if any(w > widths[i] for w in all_cell_widths[i])
+                    if any(cell.max_width > widths[i] for cell in column_cells[i])
                 ]
                 if abbreviated_cols:
                     for i in range(budget):
@@ -319,32 +389,27 @@ class AutoTable:
         return widths
 
     def _donor_capacity(self, col_idx: int, current_width: int, min_width: int) -> int:
-        """How much can this column donate without abbreviating any of its cells?
+        """How far can this column shrink without any cell dropping a variant?
 
-        Returns the amount the column can shrink before its widest
-        currently-unabbreviated cell would become abbreviated.
+        Shrinking from `current_width` is safe down to the greatest per-cell
+        effective width (the highest variant currently displayed across cells).
         """
-        cell_widths = self._get_cell_widths(col_idx)
-        # Find the widest cell that currently fits
-        fitting = [w for w in cell_widths if w <= current_width]
-        if not fitting:
-            # All cells already abbreviated, can shrink to min
-            return current_width - min_width
-        widest_fitting = max(fitting)
-        # Can shrink down to widest_fitting (but not below min_width)
-        return max(0, current_width - max(widest_fitting, min_width))
+        cells = self._column_cells(col_idx)
+        if not cells:
+            return 0
+        effective_now = max(cell.effective_width(current_width) for cell in cells)
+        floor = max(effective_now, min_width)
+        return max(0, current_width - floor)
 
     def _receiver_need(self, col_idx: int, current_width: int) -> int | None:
-        """How much does this column need to unabbreviate its shortest abbreviated cell?
+        """Width needed to advance at least one cell to its next variant.
 
-        Returns None if no cells are abbreviated.
+        Returns None when every cell is already at its widest variant.
         """
-        cell_widths = self._get_cell_widths(col_idx)
-        abbreviated = [w for w in cell_widths if w > current_width]
-        if not abbreviated:
+        breakpoints = self._column_breakpoints(col_idx, above=current_width)
+        if not breakpoints:
             return None
-        shortest_abbreviated = min(abbreviated)
-        return shortest_abbreviated - current_width
+        return breakpoints[0] - current_width
 
     def _optimize_widths(
         self,
@@ -479,23 +544,28 @@ class AutoTable:
 
         return widths
 
-    def _truncate_cell(self, cell: Text | str, width: int) -> Text:
-        """Truncate a cell to fit within width, adding ellipsis if needed."""
-        if isinstance(cell, Text):
-            text = cell.copy()
-        else:
-            text = Text(str(cell))
+    def _render_cell(self, cell: ResponsiveCell, width: int) -> Text:
+        """Render a cell at the given width.
 
-        if cell_len(text.plain) > width:
+        Picks the widest variant that fits. If even the narrowest variant is
+        wider than `width`, ellipsis-truncates it (the cell may prefer to be
+        dropped instead — see `cell.refuses` — but column dropping is not yet
+        implemented).
+        """
+        chosen = cell.render_at(width)
+        if cell_len(chosen.plain) > width:
+            text = chosen.copy()
             text.truncate(width, overflow="ellipsis")
-
-        return text
+            return text
+        return chosen
 
     def _render_row(
-        self, cells: Sequence[Text | str], widths: list[int], is_header: bool = False
+        self,
+        cells: Sequence[ResponsiveCell],
+        widths: list[int],
+        is_header: bool = False,
     ) -> Iterable[Segment]:
         """Render a single row of the table."""
-        # Left border
         if self.box_style:
             border_char = self.box_style.head_left if is_header else self.box_style.mid_left
             yield Segment(border_char)
@@ -504,38 +574,23 @@ class AutoTable:
         pad_right = self.padding - pad_left
 
         for i, (cell, width) in enumerate(zip(cells, widths)):
-            # Left padding
             yield Segment(" " * pad_left)
 
-            # Cell content
-            text = self._truncate_cell(cell, width)
-            content = text.plain
-            content_width = cell_len(content)
+            text = self._render_cell(cell, width)
+            if is_header:
+                text = text.copy()
+                text.stylize("bold")
+            content_width = cell_len(text.plain)
 
-            # Get style
-            style = None
-            if isinstance(cell, Text) and cell._spans:
-                # Use the text's style
-                pass  # Will be handled by yielding Text segments
-            elif is_header:
-                style = Style(bold=True)
+            for seg in text.render(Console()):
+                yield seg
 
-            if isinstance(cell, Text):
-                # Yield styled segments from Text object
-                for seg in text.render(Console()):
-                    yield seg
-            else:
-                yield Segment(content, style)
-
-            # Pad to width
             padding_needed = width - content_width
             if padding_needed > 0:
                 yield Segment(" " * padding_needed)
 
-            # Right padding
             yield Segment(" " * pad_right)
 
-            # Column separator or right border
             if self.box_style:
                 if i < len(widths) - 1:
                     sep = self.box_style.head_vertical if is_header else self.box_style.mid_vertical
@@ -552,35 +607,22 @@ class AutoTable:
             return
 
         content_widths = self._calculate_layout(options.max_width)
-        # Box methods expect widths including padding
         box_widths = [w + self.padding for w in content_widths]
 
-        # Top border
         if self.box_style:
             yield Segment(self.box_style.get_top(box_widths))
             yield Segment("\n")
 
-        # Header row
-        def _bold_header(h: str | Text) -> Text:
-            if isinstance(h, str):
-                return Text(h, style="bold")
-            t = h.copy()
-            t.stylize("bold")
-            return t
-
-        headers = [_bold_header(col.header) for col in self._columns]
+        headers = [col.header for col in self._columns]
         yield from self._render_row(headers, content_widths, is_header=True)
 
-        # Header separator
         if self.box_style:
             yield Segment(self.box_style.get_row(box_widths, level="head"))
             yield Segment("\n")
 
-        # Data rows
         for row in self._rows:
             yield from self._render_row(row, content_widths)
 
-        # Bottom border
         if self.box_style:
             yield Segment(self.box_style.get_bottom(box_widths))
             yield Segment("\n")
@@ -626,58 +668,140 @@ def _status_key_exceptional() -> Text:
     return text
 
 
-def _status_text(report: RepoReport) -> Text:
-    if not report.status_segments:
+def _render_status_segments(
+    segments: Sequence[tuple],
+    drop_classes: frozenset[str] = frozenset(),
+) -> Text:
+    """Render status segments into a Text, optionally dropping by narrow_class.
+
+    Segments are 3-tuples (value, style, narrow_class). Segments whose
+    narrow_class is in `drop_classes` are omitted. If nothing remains, returns
+    the bare "clean" marker (caller decides whether that's appropriate).
+    """
+    kept = [s for s in segments if len(s) < 3 or s[2] not in drop_classes]
+    if not kept:
         return Text("clean", style="green")
     text = Text()
-    for idx, (value, style) in enumerate(report.status_segments):
+    for idx, seg in enumerate(kept):
+        value, style = seg[0], seg[1]
         if idx:
             text.append(" ")
         text.append(value, style=style)
     return text
 
 
+def _status_cell(report: RepoReport) -> ResponsiveCell:
+    """Status cell with a 3-step narrowing ladder.
+
+    V0 full
+    V1 drop (+N/-M)  — low-signal line-count detail
+    V2 also drop submodule count
+    """
+    if not report.status_segments:
+        return ResponsiveCell(variants=(Text("clean", style="green"),))
+
+    v0 = _render_status_segments(report.status_segments)
+    v1 = _render_status_segments(report.status_segments, frozenset({"plus_minus"}))
+    v2 = _render_status_segments(
+        report.status_segments, frozenset({"plus_minus", "extras"})
+    )
+    # Dedupe: if narrowing doesn't shorten anything, don't add a spurious variant.
+    variants: list[Text] = [v0]
+    for candidate in (v1, v2):
+        if cell_len(candidate.plain) < cell_len(variants[-1].plain):
+            variants.append(candidate)
+    return ResponsiveCell(variants=tuple(variants))
+
+
+def _mtime_cell(value: float | None) -> ResponsiveCell:
+    """Timestamp cell: full → date → month-day → mmdd."""
+    if value is None:
+        return ResponsiveCell(variants=(Text("-"),))
+    ts = datetime.fromtimestamp(value)
+    variants = (
+        Text(ts.strftime("%Y-%m-%d %H:%M")),
+        Text(ts.strftime("%Y-%m-%d")),
+        Text(ts.strftime("%m-%d")),
+        Text(ts.strftime("%m%d")),
+    )
+    return ResponsiveCell(variants=variants)
+
+
+def _branch_remote_cell(branch: str, remote: str) -> ResponsiveCell:
+    """'master:origin/master' → 'master:origin' → 'master:…'."""
+    colon = (":", "color(240)")
+    v0 = Text.assemble(branch, colon, remote)
+    variants: list[Text] = [v0]
+    if "/" in remote:
+        head = remote.split("/", 1)[0]
+        variants.append(Text.assemble(branch, colon, head))
+    variants.append(Text.assemble(branch, colon, "…"))
+    # Keep only strictly-shortening steps.
+    deduped: list[Text] = [variants[0]]
+    for candidate in variants[1:]:
+        if cell_len(candidate.plain) < cell_len(deduped[-1].plain):
+            deduped.append(candidate)
+    return ResponsiveCell(variants=tuple(deduped))
+
+
+def _url_cell(url: str) -> ResponsiveCell:
+    """'owner/repo' → 'owner/…' when a '/' exists."""
+    v0 = Text(url)
+    variants: list[Text] = [v0]
+    if "/" in url:
+        owner = url.split("/", 1)[0]
+        short = Text(f"{owner}/…")
+        if cell_len(short.plain) < cell_len(v0.plain):
+            variants.append(short)
+    return ResponsiveCell(variants=tuple(variants))
+
+
+def _header_cell(*labels: str) -> ResponsiveCell:
+    """Shortcut for a header with simple plain-Text variants."""
+    return ResponsiveCell(variants=tuple(Text(lbl) for lbl in labels))
+
+
+def _branch_remote_header() -> ResponsiveCell:
+    colon = (":", "color(240)")
+    return ResponsiveCell(variants=(
+        Text.assemble("Branch", colon, "Remote"),
+        Text.assemble("Br", colon, "Rm"),
+    ))
+
+
 DEFAULT_COLUMNS = ["dir", "status", "branch_remote", "url", "mtime"]
 
-_COLUMN_DEFS: dict[str, tuple[str | Text, int]] = {
-    "dir": ("Dir", 50),
-    "status": ("Status", 1000),
-    "branch_remote": (Text.assemble("Branch", (":", "color(240)"), "Remote"), 50),
-    "branch": ("Branch", 50),
-    "remote": ("Remote", 30),
-    "url": ("URL", 30),
-    "mtime": ("Modified", 30),
-    "ident": ("Ident", 1),
+# (header_factory, priority). header_factory returns a ResponsiveCell each
+# call so headers can't accidentally share mutable state.
+_COLUMN_DEFS: dict[str, tuple[Callable[[], ResponsiveCell], int]] = {
+    "dir": (lambda: _header_cell("Dir"), 50),
+    "status": (lambda: _header_cell("Status"), 50),
+    "branch_remote": (_branch_remote_header, 50),
+    "branch": (lambda: _header_cell("Branch", "Br"), 50),
+    "remote": (lambda: _header_cell("Remote", "Rm"), 30),
+    "url": (lambda: _header_cell("URL"), 30),
+    "mtime": (lambda: _header_cell("Modified", "Mtime"), 30),
+    "ident": (lambda: _header_cell("Ident"), 1),
 }
 
 
-def _format_mtime(value: float | None) -> str:
-    if value is None:
-        return "-"
-    return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
-
-
-def _row_value(col: str, report: RepoReport) -> Text | str:
+def _row_value(col: str, report: RepoReport) -> ResponsiveCell:
     if col == "dir":
-        return report.display_path
+        return _as_responsive(report.display_path)
     if col == "status":
-        return _status_text(report)
+        return _status_cell(report)
     if col == "branch_remote":
-        t = Text()
-        t.append(report.branch)
-        t.append(":", style="color(240)")
-        t.append(report.remote)
-        return t
+        return _branch_remote_cell(report.branch, report.remote)
     if col == "branch":
-        return report.branch
+        return _as_responsive(report.branch)
     if col == "remote":
-        return report.remote
+        return _as_responsive(report.remote)
     if col == "url":
-        return report.remote_url
+        return _url_cell(report.remote_url)
     if col == "mtime":
-        return _format_mtime(report.latest_mtime)
+        return _mtime_cell(report.latest_mtime)
     if col == "ident":
-        return report.ident or "-"
+        return _as_responsive(report.ident or "-")
     raise ValueError(f"Unknown column: {col!r}")
 
 
@@ -723,7 +847,7 @@ def render_table(
     active_columns = columns if columns is not None else DEFAULT_COLUMNS
 
     show_exceptional_key = any(
-        any(segment == "!" for segment, _ in report.status_segments) for report in reports
+        any(seg[0] == "!" for seg in report.status_segments) for report in reports
     )
 
     # Allow priority override via environment variable
@@ -739,9 +863,9 @@ def render_table(
 
     table = AutoTable(width="fill", minimize_chars=minimize_chars)
     for col in active_columns:
-        header, default_priority = _COLUMN_DEFS[col]
+        header_factory, default_priority = _COLUMN_DEFS[col]
         priority = priority_overrides.get(col, default_priority)
-        table.add_column(header, priority=priority)
+        table.add_column(header_factory(), priority=priority)
 
     for report in reports:
         table.add_row(*[_row_value(col, report) for col in active_columns])
@@ -754,4 +878,11 @@ def render_table(
             console.print(_status_key_exceptional())
 
 
-__all__ = ["AutoColumn", "AutoTable", "DEFAULT_COLUMNS", "parse_columns", "render_table"]
+__all__ = [
+    "AutoColumn",
+    "AutoTable",
+    "DEFAULT_COLUMNS",
+    "ResponsiveCell",
+    "parse_columns",
+    "render_table",
+]

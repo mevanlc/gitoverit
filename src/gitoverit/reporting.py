@@ -21,7 +21,9 @@ class RepoReport:
     path: Path
     display_path: str
     fetch_failed: bool
-    status_segments: Sequence[tuple[str, str | None]]
+    # (text, style, narrow_class) — narrow_class ∈ {"core", "extras", "plus_minus"}
+    # and tells the Status cell which parts to drop first when narrowing.
+    status_segments: Sequence[tuple[str, str | None, str]]
     branch: str
     remote: str
     remote_url: str
@@ -38,7 +40,8 @@ class RepoReport:
         if not self.status_segments:
             return Text("clean", style="green")
         text = Text()
-        for idx, (value, style) in enumerate(self.status_segments):
+        for idx, segment in enumerate(self.status_segments):
+            value, style = segment[0], segment[1]
             if idx:
                 text.append(" ")
             text.append(value, style=style)
@@ -293,23 +296,23 @@ def analyze_repository(path: Path, fetch: bool) -> RepoReport:
     ident = read_git_ident(repo)
     latest_mtime = latest_worktree_mtime(repo)
 
-    segments: list[tuple[str, str | None]] = []
+    segments: list[tuple[str, str | None, str]] = []
     if parsed.modified_count:
-        segments.append((f"{parsed.modified_count}m", "yellow"))
+        segments.append((f"{parsed.modified_count}m", "yellow", "core"))
     if additions or deletions:
-        segments.append((f"(+{additions}/-{deletions})", "cyan"))
+        segments.append((f"(+{additions}/-{deletions})", "cyan", "plus_minus"))
     if parsed.untracked_count:
-        segments.append((f"{parsed.untracked_count}u", "magenta"))
+        segments.append((f"{parsed.untracked_count}u", "magenta", "core"))
     if parsed.deleted_count:
-        segments.append((f"{parsed.deleted_count}d", "red"))
+        segments.append((f"{parsed.deleted_count}d", "red", "core"))
     if submodule_count:
-        segments.append((f"{submodule_count}s", "blue"))
+        segments.append((f"{submodule_count}s", "blue", "extras"))
     if ahead:
-        segments.append((f"{ahead}\u2191", "green"))
+        segments.append((f"{ahead}\u2191", "green", "core"))
     if behind:
-        segments.append((f"{behind}\u2193", "bright_black"))
+        segments.append((f"{behind}\u2193", "bright_black", "core"))
     if exceptional:
-        segments.append(("!", "bold red"))
+        segments.append(("!", "bold red", "core"))
 
     dirty = bool(
         parsed.modified_count
@@ -542,11 +545,20 @@ def relativize(path: Path) -> str:
     try:
         return str(path.relative_to(Path.cwd()))
     except ValueError:
+        pass
+    try:
+        home = Path.home()
+    except (RuntimeError, KeyError):
         return str(path)
+    try:
+        rel = path.relative_to(home)
+    except ValueError:
+        return str(path)
+    return "~" if str(rel) == "." else f"~/{rel}"
 
 
-def render_status_segments(segments: Sequence[tuple[str, str | None]]) -> str:
-    status = " ".join(segment for segment, _ in segments)
+def render_status_segments(segments: Sequence[tuple]) -> str:
+    status = " ".join(seg[0] for seg in segments)
     return status or "clean"
 
 

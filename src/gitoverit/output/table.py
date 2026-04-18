@@ -669,7 +669,7 @@ def _status_key_exceptional() -> Text:
 
 
 def _render_status_segments(
-    segments: Sequence[tuple],
+    segments: Sequence[tuple[str, str | None, str]],
     drop_classes: frozenset[str] = frozenset(),
 ) -> Text:
     """Render status segments into a Text, optionally dropping by narrow_class.
@@ -678,7 +678,7 @@ def _render_status_segments(
     narrow_class is in `drop_classes` are omitted. If nothing remains, returns
     the bare "clean" marker (caller decides whether that's appropriate).
     """
-    kept = [s for s in segments if len(s) < 3 or s[2] not in drop_classes]
+    kept = [s for s in segments if s[2] not in drop_classes]
     if not kept:
         return Text("clean", style="green")
     text = Text()

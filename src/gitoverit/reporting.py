@@ -557,7 +557,7 @@ def relativize(path: Path) -> str:
     return "~" if str(rel) == "." else f"~/{rel}"
 
 
-def render_status_segments(segments: Sequence[tuple]) -> str:
+def render_status_segments(segments: Sequence[tuple[str, str | None, str]]) -> str:
     status = " ".join(seg[0] for seg in segments)
     return status or "clean"
 

@@ -199,6 +199,11 @@ def cli(
         "--errors",
         help="Print error details to stderr after all output is complete.",
     ),
+    no_progress: bool = typer.Option(
+        False,
+        "--no-progress",
+        help="Disable the interactive progress bar even when stdout is a TTY.",
+    ),
     _help_where: Optional[bool] = typer.Option(
         None,
         "--help-where",
@@ -209,7 +214,7 @@ def cli(
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
 
-    if _stdout_is_tty():
+    if _stdout_is_tty() and not no_progress:
         hook = RichHook(console)
     elif show_errors:
         hook = SilentHook()

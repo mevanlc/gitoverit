@@ -1,7 +1,7 @@
 # gitoverit
 
-A CLI that walks directories, finds Git repositories, and prints a status summary as a table or JSON.
-Also includes a handy Python-like expression language for filtering repos.
+* A CLI that walks directories, finds Git repositories, and prints a status summary as a table or JSON.
+* Also includes a powerful Python-based expression language for filtering repos and operating on them in batch.
 
 ![](https://i.imgur.com/Ffvx8GI.png)
 

@@ -2,7 +2,9 @@
 
 `gitoverit` is a CLI helper that walks directories, finds non-submodule Git repositories, and summarizes their state in a Rich-powered table or JSON output.
 
-By default, gitoverit uses parallel processing to analyze multiple repositories concurrently, providing ~2.5x speedup over sequential analysis.
+gitoverit uses parallel processing to analyze multiple repositories concurrently.
+
+![](https://i.imgur.com/Ffvx8GI.png)
 
 ## Usage
 

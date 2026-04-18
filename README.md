@@ -1,89 +1,134 @@
 # gitoverit
 
-`gitoverit` is a CLI helper that walks directories, finds non-submodule Git repositories, and summarizes their state in a Rich-powered table or JSON output.
-
-gitoverit uses parallel processing to analyze multiple repositories concurrently.
+A CLI that walks directories, finds Git repositories, and prints a status summary as a table or JSON.
 
 ![](https://i.imgur.com/Ffvx8GI.png)
 
-## Usage
-
-```
-gitoverit [OPTIONS] <DIRS...>
-```
-
-### Options
-
-- `--fetch` — fetch from configured remotes before collecting status.
-- `--format {table,json}` — choose between a Rich table (default) or JSON payload.
-- `--dirty-only` — hide repositories that are completely clean.
-- `--sort {mtime,author,none}` — sort by newest modification time (default), committer ident, or disable sorting.
-- `--reverse` — flip the selected sort order.
-- `--parallel N` / `-p N` — control parallel processing:
-  - Not specified (default): auto-detect optimal worker count
-  - `0`: sequential mode (main thread only)
-  - `N > 0`: use exactly N worker processes
-- `--errorfmt {ignore,short,long}` — control how repo analysis errors are displayed.
-- `--table-algo {cell,char}` / `-a {cell,char}` — choose the table width algorithm (ignored for `--format json`).
-
-### Examples
-
-```bash
-# Scan current directory with auto-detected parallelism
-gitoverit .
-
-# Scan multiple directories
-gitoverit ~/projects ~/work
-
-# Use sequential mode (no parallelism)
-gitoverit ~/projects --parallel 0
-
-# Use exactly 4 workers
-gitoverit ~/projects --parallel 4
-
-# Show only dirty repos, sorted by author
-gitoverit ~/projects --dirty-only --sort author
-
-# Fetch before scanning, output as JSON
-gitoverit ~/projects --fetch --format json
-
-# Use "minimize truncated chars" table layout
-gitoverit ~/projects --table-algo char
-```
-
-## Install (uv tool)
+## Install
 
 ```bash
 uv tool install .
 ```
 
-If you re-run `uv tool install .` after changing the code but keeping the same version number, uv may keep the existing tool environment. In that case use:
+To pick up local code changes when the version hasn't been bumped:
 
 ```bash
 uv tool install --force --reinstall .
 ```
 
-For development, you can install in editable mode so changes are reflected without reinstalling:
+For development (editable install):
 
 ```bash
 uv tool install -e --force .
 ```
 
-## Performance
+## Usage
 
-gitoverit uses ProcessPoolExecutor with streaming discovery for optimal performance:
-- Repositories are submitted to worker processes immediately as discovered
-- Workers analyze repos concurrently while directory traversal continues
-- Typical speedup: ~2.5x faster than sequential on multi-core systems
+```
+gitoverit [OPTIONS] [DIRS...]
+```
 
-## Progress Output
+If no directory is given, the current directory is used. Run with `-h` for the option list.
 
-Progress output uses Rich when run in a TTY, showing:
-- Discovery phase: indeterminate progress while finding repos
-- Processing phase: determinate progress bar with completion status
+### Options
 
-Implement the `HookProtocol` in `src/gitoverit/progress.py` if you need a custom progress reporter.
+```
+-f, --fetch                Run `git fetch --all` for each repo before inspection.
+-o, --format {table,json}  Output format. Default: table.
+-d, --dirty-only           Hide repos with no uncommitted changes.
+-s, --sort {mtime,author,none}
+                           Sort by latest worktree mtime (default), committer
+                           identity, or disable sorting.
+-r, --reverse              Reverse the active sort order.
+-j, --jobs N               Worker count. Omit for auto-detect; 0 for sequential.
+-a, --table-algo {cell,char}
+                           Column-width algorithm for the table renderer.
+-c, --columns SPEC         Add/remove/reset columns. See "Columns" below.
+-w, --where EXPR           Filter rows by an expression. See `--help-where`.
+-p, --print EXPR           Evaluate EXPR per repo and print the result, one
+                           per line. Replaces table/JSON output.
+-0, --print0               With --print, separate results with NUL bytes
+                           instead of newlines.
+    --errors               Print error tracebacks to stderr after output.
+    --no-progress          Suppress the progress bar even on a TTY.
+    --help-where           Show full reference for --where / --print.
+```
 
-## Help
+### Columns
 
-When no arguments are supplied the help text is shown (instead of running against the current directory). Use `-h` or `--help` for the usage synopsis.
+`--columns` takes a comma-separated spec. A bare name adds a column,
+`-name` removes one, and a single `-` clears all columns first so the
+remainder of the spec defines the full set.
+
+Available columns: `dir`, `status`, `branch_remote`, `branch`, `remote`,
+`url`, `mtime`, `ident`.
+
+```bash
+# Drop the URL column
+gitoverit ~/projects -c -url
+
+# Show only dir and status
+gitoverit ~/projects -c -,dir,status
+```
+
+### Examples
+
+```bash
+# Scan the current directory
+gitoverit .
+
+# Scan multiple roots
+gitoverit ~/projects ~/work
+
+# Sequential mode
+gitoverit ~/projects -j 0
+
+# 4 workers
+gitoverit ~/projects -j 4
+
+# Dirty repos only, sorted by author
+gitoverit ~/projects -d -s author
+
+# Fetch first, then output JSON
+gitoverit ~/projects -f -o json
+
+# Repos on a non-main branch with unpushed commits
+gitoverit ~/projects -w 'branch != "main" and ahead > 0'
+
+# Print absolute paths of dirty repos, NUL-delimited (xargs-friendly)
+gitoverit ~/projects -w dirty -p path -0 | xargs -0 -n1 echo
+```
+
+## Filtering and printing
+
+`--where` and `--print` share an expression language (sandboxed via
+`simpleeval`). Variables include `path`, `dir`, `status`, `branch`,
+`remote`, `url`, `ident`, `mtime`, `dirty`, `ahead`, `behind`,
+`modified`, `untracked`, and `deleted`. String variables expose `.rx()`
+and `.rxi()` for regex matching.
+
+Run `gitoverit --help-where` for the full reference and more examples.
+
+## Parallelism
+
+Repositories are analyzed in a `ThreadPoolExecutor`; threads are a good
+fit because per-repo work is dominated by `git` subprocess I/O. Discovery
+streams into the pool so workers start immediately.
+
+The default worker count is `cpu_count - 1`, capped at 8. Override with
+`-j N`, or use `-j 0` to run on the main thread (useful for debugging).
+
+## Progress and TTY behavior
+
+When stdout is a TTY, a Rich progress bar is shown: an indeterminate
+"Discovery" phase followed by a determinate "Statusing" bar. Pass
+`--no-progress` to suppress it. When stdout is not a TTY, no progress
+output is emitted.
+
+To implement a custom progress reporter, see `HookProtocol` in
+`src/gitoverit/progress.py`.
+
+## Development
+
+See `AGENTS.md` for an orientation to the code layout and conventions,
+and `CONTRIBUTING.md` for setup and the PR workflow.

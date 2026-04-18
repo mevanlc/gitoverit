@@ -110,6 +110,50 @@ and `.rxi()` for regex matching.
 
 Run `gitoverit --help-where` for the full reference and more examples.
 
+### Recipes
+
+Push every repo that's ahead of its tracking branch, clean, and not behind:
+
+```bash
+gitoverit ~/projects -f -w 'ahead and not behind and not dirty' -p path -0 \
+  | xargs -0 -I{} git -C {} push
+```
+
+Pull every repo that's behind its tracking branch, clean, and not ahead:
+
+```bash
+gitoverit ~/projects -f -w 'behind and not ahead and not dirty' -p path -0 \
+  | xargs -0 -I{} git -C {} pull
+```
+
+List repos that have diverged (commits in both directions) so you can
+resolve them by hand:
+
+```bash
+gitoverit ~/projects -f -w 'ahead and behind'
+```
+
+List repos with no upstream tracking branch:
+
+```bash
+gitoverit ~/projects -w 'remote == "-"'
+```
+
+Find repos hosted under a specific GitHub org (substring match on the
+remote URL):
+
+```bash
+gitoverit ~/projects -w '"acme/" in url'
+```
+
+Print `<dir> <branch>` for every repo not on `main` or `master`, useful
+for piping into other tooling:
+
+```bash
+gitoverit ~/projects -w 'branch != "main" and branch != "master"' \
+  -p 'dir + " " + branch'
+```
+
 ## Parallelism
 
 Repositories are analyzed in a `ThreadPoolExecutor`; threads are a good

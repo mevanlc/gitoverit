@@ -653,6 +653,7 @@ def _status_key_main() -> Text:
     add("↑", "ahead", "green")
     add("↓", "behind", "bright_black")
     add("s", "submodules", "blue")
+    add("p", "pulled", "cyan")
 
     return text
 

@@ -35,6 +35,8 @@ class RepoReport:
     modified: int = 0
     untracked: int = 0
     deleted: int = 0
+    pull_failed: bool = False
+    pulled: bool = False
 
     def status_text(self) -> Text:
         if not self.status_segments:
@@ -56,6 +58,23 @@ class ParsedStatus:
     has_conflicts: bool
 
 
+@dataclass
+class RepoState:
+    parsed: ParsedStatus
+    additions: int
+    deletions: int
+    ahead: int
+    behind: int
+    remote_ref: str | None
+    remote_url: str | None
+    branch_name: str
+    exceptional: bool
+    submodule_count: int
+    ident: str | None
+    latest_mtime: float | None
+    dirty: bool
+
+
 EXCEPTION_SENTINELS = (
     "MERGE_HEAD",
     "CHERRY_PICK_HEAD",
@@ -73,6 +92,7 @@ def collect_reports(
     fetch: bool,
     dirty_only: bool,
     include_ignored: bool = False,
+    pull_safe: bool = False,
     hook: HookProtocol | None = None,
 ) -> list[RepoReport]:
     # Backwards-compatible wrapper for sequential runs.
@@ -81,6 +101,7 @@ def collect_reports(
         fetch=fetch,
         dirty_only=dirty_only,
         include_ignored=include_ignored,
+        pull_safe=pull_safe,
         hook=hook,
         max_workers=0,
     )
@@ -104,6 +125,7 @@ def collect_reports_parallel(
     fetch: bool,
     dirty_only: bool,
     include_ignored: bool = False,
+    pull_safe: bool = False,
     hook: HookProtocol | None = None,
     max_workers: int | None = None,
 ) -> list[RepoReport]:
@@ -136,9 +158,16 @@ def collect_reports_parallel(
             for index, repo_path in enumerate(repo_paths, start=1):
                 statused_total = index
                 try:
-                    report = analyze_repository(repo_path, fetch=fetch)
+                    report = analyze_repository(
+                        repo_path,
+                        fetch=fetch,
+                        pull_safe=pull_safe,
+                    )
                     if not (
-                        dirty_only and not report.dirty and not report.fetch_failed
+                        dirty_only
+                        and not report.dirty
+                        and not report.fetch_failed
+                        and not report.pull_failed
                     ):
                         reports.append(report)
                 except Exception as exc:
@@ -177,7 +206,12 @@ def collect_reports_parallel(
                     if hook:
                         hook.discovering(repo_path)
 
-                    future = executor.submit(analyze_repository, repo_path, fetch)
+                    future = executor.submit(
+                        analyze_repository,
+                        repo_path,
+                        fetch,
+                        pull_safe,
+                    )
                     futures[future] = repo_path
 
                 if not futures:
@@ -195,7 +229,10 @@ def collect_reports_parallel(
                     try:
                         report = future.result()
                         if not (
-                            dirty_only and not report.dirty and not report.fetch_failed
+                            dirty_only
+                            and not report.dirty
+                            and not report.fetch_failed
+                            and not report.pull_failed
                         ):
                             reports.append(report)
                     except Exception as exc:
@@ -283,85 +320,130 @@ def _is_gitignored_by_parent(path: Path, known_repos: list[Path]) -> bool:
     return result.returncode == 0
 
 
-def analyze_repository(path: Path, fetch: bool) -> RepoReport:
+def analyze_repository(path: Path, fetch: bool, pull_safe: bool = False) -> RepoReport:
     repo = Repo(path)
     fetch_failed = False
+    pull_failed = False
+    pulled = False
 
-    if fetch and repo.remotes:
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(path), "fetch", "--all"],
-                capture_output=True,
-                timeout=60,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-            )
-            if result.returncode != 0:
-                fetch_failed = True
-        except (subprocess.TimeoutExpired, OSError):
+    if (fetch or pull_safe) and repo.remotes:
+        if not _run_git_operation(path, "fetch", "--all", timeout=60):
             fetch_failed = True
 
-    status = repo.git.status("--porcelain")
-    parsed = parse_status_porcelain(status)
+    state = _collect_repo_state(repo)
 
-    additions, deletions = diff_numstat_totals(repo)
+    if pull_safe and _can_pull_safely(state, fetch_failed=fetch_failed):
+        if _run_git_operation(path, "pull", "--ff-only", timeout=120):
+            pulled = True
+        else:
+            pull_failed = True
+        state = _collect_repo_state(repo)
 
-    ahead, behind, remote_ref, remote_url = compute_branch_tracking(repo)
-    branch_name = determine_branch(repo)
-
-    exceptional = has_exceptional_state(repo, parsed)
-    submodule_count = count_submodules(repo)
-
-    ident = read_git_ident(repo)
-    latest_mtime = latest_worktree_mtime(repo)
-
-    segments: list[tuple[str, str | None, str]] = []
-    if parsed.modified_count:
-        segments.append((f"{parsed.modified_count}m", "yellow", "core"))
-    if additions or deletions:
-        segments.append((f"(+{additions}/-{deletions})", "cyan", "plus_minus"))
-    if parsed.untracked_count:
-        segments.append((f"{parsed.untracked_count}u", "magenta", "core"))
-    if parsed.deleted_count:
-        segments.append((f"{parsed.deleted_count}d", "red", "core"))
-    if submodule_count:
-        segments.append((f"{submodule_count}s", "blue", "extras"))
-    if ahead:
-        segments.append((f"{ahead}\u2191", "green", "core"))
-    if behind:
-        segments.append((f"{behind}\u2193", "bright_black", "core"))
-    if exceptional:
-        segments.append(("!", "bold red", "core"))
-
-    dirty = bool(
-        parsed.modified_count
-        or additions
-        or deletions
-        or parsed.untracked_count
-        or parsed.deleted_count
-        or exceptional
-    )
+    segments = _render_repo_state_segments(state, pulled=pulled)
 
     display_path = relativize(path)
-    if fetch_failed:
+    if fetch_failed or pull_failed:
         display_path = f"! {display_path}"
 
     return RepoReport(
         path=path,
         display_path=display_path,
         fetch_failed=fetch_failed,
+        pull_failed=pull_failed,
+        pulled=pulled,
         status_segments=segments,
-        branch=branch_name,
-        remote=remote_ref or "-",
-        remote_url=remote_url or "-",
-        ident=ident,
-        dirty=dirty,
-        latest_mtime=latest_mtime,
+        branch=state.branch_name,
+        remote=state.remote_ref or "-",
+        remote_url=state.remote_url or "-",
+        ident=state.ident,
+        dirty=state.dirty,
+        latest_mtime=state.latest_mtime,
+        ahead=state.ahead,
+        behind=state.behind,
+        modified=state.parsed.modified_count,
+        untracked=state.parsed.untracked_count,
+        deleted=state.parsed.deleted_count,
+    )
+
+
+def _run_git_operation(path: Path, *args: str, timeout: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), *args],
+            capture_output=True,
+            timeout=timeout,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
+def _collect_repo_state(repo: Repo) -> RepoState:
+    status = repo.git.status("--porcelain")
+    parsed = parse_status_porcelain(status)
+    additions, deletions = diff_numstat_totals(repo)
+    ahead, behind, remote_ref, remote_url = compute_branch_tracking(repo)
+    exceptional = has_exceptional_state(repo, parsed)
+    return RepoState(
+        parsed=parsed,
+        additions=additions,
+        deletions=deletions,
         ahead=ahead,
         behind=behind,
-        modified=parsed.modified_count,
-        untracked=parsed.untracked_count,
-        deleted=parsed.deleted_count,
+        remote_ref=remote_ref,
+        remote_url=remote_url,
+        branch_name=determine_branch(repo),
+        exceptional=exceptional,
+        submodule_count=count_submodules(repo),
+        ident=read_git_ident(repo),
+        latest_mtime=latest_worktree_mtime(repo),
+        dirty=bool(
+            parsed.modified_count
+            or additions
+            or deletions
+            or parsed.untracked_count
+            or parsed.deleted_count
+            or exceptional
+        ),
     )
+
+
+def _can_pull_safely(state: RepoState, *, fetch_failed: bool) -> bool:
+    return (
+        not fetch_failed
+        and state.behind > 0
+        and state.ahead == 0
+        and not state.dirty
+        and state.remote_ref is not None
+    )
+
+
+def _render_repo_state_segments(
+    state: RepoState,
+    *,
+    pulled: bool,
+) -> list[tuple[str, str | None, str]]:
+    segments: list[tuple[str, str | None, str]] = []
+    if state.parsed.modified_count:
+        segments.append((f"{state.parsed.modified_count}m", "yellow", "core"))
+    if state.additions or state.deletions:
+        segments.append((f"(+{state.additions}/-{state.deletions})", "cyan", "plus_minus"))
+    if state.parsed.untracked_count:
+        segments.append((f"{state.parsed.untracked_count}u", "magenta", "core"))
+    if state.parsed.deleted_count:
+        segments.append((f"{state.parsed.deleted_count}d", "red", "core"))
+    if state.submodule_count:
+        segments.append((f"{state.submodule_count}s", "blue", "extras"))
+    if state.ahead:
+        segments.append((f"{state.ahead}\u2191", "green", "core"))
+    if state.behind:
+        segments.append((f"{state.behind}\u2193", "bright_black", "core"))
+    if pulled:
+        segments.append(("p", "cyan", "extras"))
+    if state.exceptional:
+        segments.append(("!", "bold red", "core"))
+    return segments
 
 
 def parse_status_porcelain(output: str) -> ParsedStatus:

@@ -1,3 +1,4 @@
+import json
 import io
 import os
 import time
@@ -8,16 +9,20 @@ from tempfile import TemporaryDirectory
 from git import Actor, Repo
 
 from gitoverit.cli import SortMode, _filter_reports, _print_reports, _sort_reports
+from gitoverit.output import render_json
 from gitoverit.output.table import DEFAULT_COLUMNS, parse_columns
 from gitoverit.reporting import (
     ParsedStatus,
     RepoReport,
+    analyze_repository,
     discover_repositories,
     has_exceptional_state,
     latest_worktree_mtime,
     parse_status_porcelain,
     simplify_url,
 )
+
+AUTHOR = Actor("Tester", "tester@example.com")
 
 
 class ParseStatusTests(unittest.TestCase):
@@ -58,8 +63,7 @@ class LatestWorktreeMtimeTests(unittest.TestCase):
             tracked = worktree / "tracked.txt"
             tracked.write_text("tracked")
             repo.index.add([str(tracked.relative_to(worktree))])
-            author = Actor("Tester", "tester@example.com")
-            repo.index.commit("initial", author=author, committer=author)
+            repo.index.commit("initial", author=AUTHOR, committer=AUTHOR)
 
             past_time = time.time() - 10_000
             os.utime(tracked, (past_time, past_time))
@@ -83,8 +87,7 @@ class ExceptionalStateTests(unittest.TestCase):
             tracked = worktree / "tracked.txt"
             tracked.write_text("tracked")
             repo.index.add([str(tracked.relative_to(worktree))])
-            author = Actor("Tester", "tester@example.com")
-            repo.index.commit("initial", author=author, committer=author)
+            repo.index.commit("initial", author=AUTHOR, committer=AUTHOR)
 
             rebase_head = Path(repo.git_dir) / "REBASE_HEAD"
             rebase_head.write_text(repo.head.commit.hexsha + "\n")
@@ -151,8 +154,7 @@ class DiscoverRepositoriesTests(unittest.TestCase):
             gitignore = parent / ".gitignore"
             gitignore.write_text("nested/\n")
             parent_repo.index.add([".gitignore"])
-            author = Actor("Tester", "tester@example.com")
-            parent_repo.index.commit("init", author=author, committer=author)
+            parent_repo.index.commit("init", author=AUTHOR, committer=AUTHOR)
 
             # Create a nested repo inside the gitignored directory
             nested = parent / "nested"
@@ -210,8 +212,7 @@ class DiscoverRepositoriesTests(unittest.TestCase):
             gitignore = parent / ".gitignore"
             gitignore.write_text("vendor/\n")
             parent_repo.index.add([".gitignore"])
-            author = Actor("Tester", "tester@example.com")
-            parent_repo.index.commit("init", author=author, committer=author)
+            parent_repo.index.commit("init", author=AUTHOR, committer=AUTHOR)
 
             # Create vendor/lib which is a repo, under a gitignored path
             vendor_lib = parent / "vendor" / "lib"
@@ -438,6 +439,78 @@ class SortReportsTests(unittest.TestCase):
             ["third", "second", "first"],
         )
 
+class PullSafeTests(unittest.TestCase):
+    def _commit_file(self, repo: Repo, relative_path: str, content: str, message: str) -> None:
+        worktree = Path(repo.working_tree_dir or "")
+        path = worktree / relative_path
+        path.write_text(content)
+        repo.index.add([relative_path])
+        repo.index.commit(message, author=AUTHOR, committer=AUTHOR)
+
+    def _clone_remote_triplet(self, tmpdir: str) -> tuple[Repo, Repo]:
+        remote = Path(tmpdir) / "remote.git"
+        Repo.init(remote, bare=True)
+
+        seed = Repo.clone_from(str(remote), Path(tmpdir) / "seed")
+        self._commit_file(seed, "README.md", "seed\n", "seed")
+        seed.git.push("--set-upstream", "origin", seed.active_branch.name)
+
+        local = Repo.clone_from(str(remote), Path(tmpdir) / "local")
+        other = Repo.clone_from(str(remote), Path(tmpdir) / "other")
+        return local, other
+
+    def test_pull_safe_fast_forwards_clean_repo(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            local, other = self._clone_remote_triplet(tmpdir)
+            self._commit_file(other, "README.md", "remote change\n", "remote change")
+            other.git.push("origin", other.active_branch.name)
+
+            report = analyze_repository(Path(local.working_tree_dir or ""), fetch=False, pull_safe=True)
+
+            self.assertTrue(report.pulled)
+            self.assertFalse(report.pull_failed)
+            self.assertEqual(report.behind, 0)
+            self.assertFalse(report.dirty)
+            self.assertIn(("p", "cyan", "extras"), report.status_segments)
+
+            payload = json.loads(render_json([report]))[0]
+            self.assertTrue(payload["pulled"])
+            self.assertFalse(payload["pull_failed"])
+
+    def test_pull_safe_skips_dirty_repo(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            local, other = self._clone_remote_triplet(tmpdir)
+            self._commit_file(other, "README.md", "remote change\n", "remote change")
+            other.git.push("origin", other.active_branch.name)
+
+            dirty_path = Path(local.working_tree_dir or "") / "local.txt"
+            dirty_path.write_text("dirty\n")
+            before = local.head.commit.hexsha
+
+            report = analyze_repository(Path(local.working_tree_dir or ""), fetch=False, pull_safe=True)
+
+            self.assertFalse(report.pulled)
+            self.assertFalse(report.pull_failed)
+            self.assertEqual(report.behind, 1)
+            self.assertTrue(report.dirty)
+            self.assertEqual(local.head.commit.hexsha, before)
+
+    def test_pull_safe_skips_diverged_repo(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            local, other = self._clone_remote_triplet(tmpdir)
+            self._commit_file(other, "README.md", "remote change\n", "remote change")
+            other.git.push("origin", other.active_branch.name)
+
+            self._commit_file(local, "local.txt", "local change\n", "local change")
+            before = local.head.commit.hexsha
+
+            report = analyze_repository(Path(local.working_tree_dir or ""), fetch=False, pull_safe=True)
+
+            self.assertFalse(report.pulled)
+            self.assertFalse(report.pull_failed)
+            self.assertEqual(report.ahead, 1)
+            self.assertEqual(report.behind, 1)
+            self.assertEqual(local.head.commit.hexsha, before)
 
 class PrintReportsTests(unittest.TestCase):
     def _make_report(self, **kwargs: object) -> RepoReport:

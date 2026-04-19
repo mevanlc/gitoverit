@@ -35,6 +35,8 @@ If no directory is given, the current directory is used. Run with `-h` for the o
 
 ```
 -f, --fetch                Run `git fetch --all` for each repo before inspection.
+    --pull-safe            Fetch first, then run `git pull --ff-only` only for
+                           repos that are behind, not ahead, and otherwise clean.
 -o, --format {table,json}  Output format. Default: table.
 -d, --dirty-only           Hide repos with no uncommitted changes.
 -s, --sort {mtime,author,none}
@@ -93,6 +95,9 @@ gitoverit ~/projects -d -s author
 # Fetch first, then output JSON
 gitoverit ~/projects -f -o json
 
+# Safely fast-forward repos that are behind upstream
+gitoverit ~/projects --pull-safe
+
 # Repos on a non-main branch with unpushed commits
 gitoverit ~/projects -w 'branch != "main" and ahead > 0'
 
@@ -125,6 +130,10 @@ Pull every repo that's behind its tracking branch, clean, and not ahead:
 gitoverit ~/projects -f -w 'behind and not ahead and not dirty' -p path -0 \
   | xargs -0 -I{} git -C {} pull
 ```
+
+`--pull-safe` only pulls repos that are in a state where pulling is unlikely
+to create merge conflicts. To pull more aggressively, use the `-p` + `xargs`
+recipe above.
 
 List repos that have diverged (commits in both directions) so you can
 resolve them by hand:

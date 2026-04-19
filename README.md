@@ -184,5 +184,4 @@ To implement a custom progress reporter, see `HookProtocol` in
 
 ## Development
 
-See `AGENTS.md` for an orientation to the code layout and conventions,
-and `CONTRIBUTING.md` for setup and the PR workflow.
+I don't consider this project "vibe coded." I used AI assistance to help with planning, rubberducking, and writing some of the code. I myself know and have reviewed the code.

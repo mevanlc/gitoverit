@@ -72,6 +72,7 @@ def collect_reports(
     *,
     fetch: bool,
     dirty_only: bool,
+    include_ignored: bool = False,
     hook: HookProtocol | None = None,
 ) -> list[RepoReport]:
     # Backwards-compatible wrapper for sequential runs.
@@ -79,6 +80,7 @@ def collect_reports(
         dirs,
         fetch=fetch,
         dirty_only=dirty_only,
+        include_ignored=include_ignored,
         hook=hook,
         max_workers=0,
     )
@@ -101,6 +103,7 @@ def collect_reports_parallel(
     *,
     fetch: bool,
     dirty_only: bool,
+    include_ignored: bool = False,
     hook: HookProtocol | None = None,
     max_workers: int | None = None,
 ) -> list[RepoReport]:
@@ -117,7 +120,10 @@ def collect_reports_parallel(
         worker_count = get_worker_count(max_workers)
         if worker_count == 0:
             repo_paths: list[Path] = []
-            for repo_path in discover_repositories(dirs):
+            for repo_path in discover_repositories(
+                dirs,
+                include_ignored=include_ignored,
+            ):
                 discovered_total += 1
                 if hook:
                     hook.discovering(repo_path)
@@ -148,7 +154,12 @@ def collect_reports_parallel(
 
         discovery_finished = False
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            repo_iter = iter(discover_repositories(dirs))
+            repo_iter = iter(
+                discover_repositories(
+                    dirs,
+                    include_ignored=include_ignored,
+                )
+            )
             futures: dict[Future[RepoReport], Path] = {}
 
             while True:
@@ -200,7 +211,11 @@ def collect_reports_parallel(
     return reports
 
 
-def discover_repositories(roots: Iterable[Path]) -> Iterator[Path]:
+def discover_repositories(
+    roots: Iterable[Path],
+    *,
+    include_ignored: bool = False,
+) -> Iterator[Path]:
     seen: set[Path] = set()
     known_repos: list[Path] = []
     normalized_roots = [root.resolve() for root in roots]
@@ -216,7 +231,10 @@ def discover_repositories(roots: Iterable[Path]) -> Iterator[Path]:
                     continue
                 resolved = current.resolve()
                 if resolved not in seen:
-                    if _is_gitignored_by_parent(resolved, known_repos):
+                    if not include_ignored and _is_gitignored_by_parent(
+                        resolved,
+                        known_repos,
+                    ):
                         dirnames[:] = []
                         continue
                     seen.add(resolved)

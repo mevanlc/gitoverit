@@ -149,6 +149,12 @@ def cli(
     dirty_only: bool = typer.Option(
         False, "-d", "--dirty-only", help="Display only repositories with uncommitted local changes."
     ),
+    include_ignored: bool = typer.Option(
+        False,
+        "-I",
+        "--include-ignored",
+        help="Include nested repositories even when ignored by a parent repository.",
+    ),
     sort: SortMode = typer.Option(
         SortMode.MTIME,
         "-s", "--sort",
@@ -225,6 +231,7 @@ def cli(
         dirs,
         fetch=fetch,
         dirty_only=dirty_only,
+        include_ignored=include_ignored,
         hook=hook,
         max_workers=parallel,  # None means auto-detect, 0 means sequential, N means N workers
     )

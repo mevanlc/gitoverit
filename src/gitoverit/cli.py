@@ -6,7 +6,7 @@ import sys
 from enum import Enum
 from pathlib import Path
 from traceback import TracebackException
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Optional, TypeAlias
 
 import typer
 from rich.console import Console
@@ -17,6 +17,8 @@ from .progress import RichHook, SilentHook
 from .reporting import RepoReport, collect_reports_parallel, render_status_segments
 
 console = Console()
+
+SortKey: TypeAlias = str | float | tuple[str, str]
 
 APP = typer.Typer(
     add_completion=False,
@@ -152,6 +154,11 @@ def cli(
     fetch: bool = typer.Option(
         False, "-f", "--fetch", help="Run git fetch --all for each repository before inspection."
     ),
+    pull_safe: bool = typer.Option(
+        False,
+        "--pull-safe",
+        help="Fetch and fast-forward only clean, non-diverged repositories that are behind upstream.",
+    ),
     output_format: OutputFormat = typer.Option(
         OutputFormat.TABLE, "-o", "--format", case_sensitive=False, help="Choose output format."
     ),
@@ -238,9 +245,10 @@ def cli(
 
     reports = collect_reports_parallel(
         dirs,
-        fetch=fetch,
+        fetch=fetch or pull_safe,
         dirty_only=dirty_only,
         include_ignored=include_ignored,
+        pull_safe=pull_safe,
         hook=hook,
         max_workers=parallel,  # None means auto-detect, 0 means sequential, N means N workers
     )
@@ -341,7 +349,7 @@ def _sort_reports(reports: List[RepoReport], *, sort: SortMode, reverse: bool) -
     reports.sort(key=lambda report: _report_sort_key(report, sort), reverse=reverse)
 
 
-def _report_sort_key(report: RepoReport, sort: SortMode) -> object:
+def _report_sort_key(report: RepoReport, sort: SortMode) -> SortKey:
     if sort is SortMode.DIR:
         return report.display_path.casefold()
     if sort is SortMode.PATH:

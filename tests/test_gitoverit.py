@@ -164,6 +164,27 @@ class DiscoverRepositoriesTests(unittest.TestCase):
             self.assertIn(parent.resolve(), resolved_paths)
             self.assertNotIn(nested.resolve(), resolved_paths)
 
+    def test_gitignored_nested_repo_is_found_with_include_ignored(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir) / "parent"
+            parent.mkdir()
+            parent_repo = Repo.init(parent)
+
+            gitignore = parent / ".gitignore"
+            gitignore.write_text("nested/\n")
+            parent_repo.index.add([".gitignore"])
+            author = Actor("Tester", "tester@example.com")
+            parent_repo.index.commit("init", author=author, committer=author)
+
+            nested = parent / "nested"
+            nested.mkdir()
+            Repo.init(nested)
+
+            discovered = list(discover_repositories([parent], include_ignored=True))
+            resolved_paths = [p.resolve() for p in discovered]
+            self.assertIn(parent.resolve(), resolved_paths)
+            self.assertIn(nested.resolve(), resolved_paths)
+
     def test_non_gitignored_nested_repo_is_found(self) -> None:
         with TemporaryDirectory() as tmpdir:
             parent = Path(tmpdir) / "parent"
@@ -201,6 +222,27 @@ class DiscoverRepositoriesTests(unittest.TestCase):
             resolved_paths = [p.resolve() for p in discovered]
             self.assertIn(parent.resolve(), resolved_paths)
             self.assertNotIn(vendor_lib.resolve(), resolved_paths)
+
+    def test_deeply_nested_under_gitignored_is_found_with_include_ignored(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir) / "parent"
+            parent.mkdir()
+            parent_repo = Repo.init(parent)
+
+            gitignore = parent / ".gitignore"
+            gitignore.write_text("vendor/\n")
+            parent_repo.index.add([".gitignore"])
+            author = Actor("Tester", "tester@example.com")
+            parent_repo.index.commit("init", author=author, committer=author)
+
+            vendor_lib = parent / "vendor" / "lib"
+            vendor_lib.mkdir(parents=True)
+            Repo.init(vendor_lib)
+
+            discovered = list(discover_repositories([parent], include_ignored=True))
+            resolved_paths = [p.resolve() for p in discovered]
+            self.assertIn(parent.resolve(), resolved_paths)
+            self.assertIn(vendor_lib.resolve(), resolved_paths)
 
 
 class FilterReportsTests(unittest.TestCase):

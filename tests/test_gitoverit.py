@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 from git import Actor, Repo
 
-from gitoverit.cli import _filter_reports, _print_reports
+from gitoverit.cli import SortMode, _filter_reports, _print_reports, _sort_reports
 from gitoverit.output.table import DEFAULT_COLUMNS, parse_columns
 from gitoverit.reporting import (
     ParsedStatus,
@@ -293,6 +293,108 @@ class FilterReportsTests(unittest.TestCase):
         """dirty should be False when only ahead/behind are set."""
         report = self._make_report(ahead=5, behind=2)
         self.assertFalse(report.dirty)
+
+
+class SortReportsTests(unittest.TestCase):
+    def _make_report(self, **kwargs: object) -> RepoReport:
+        defaults: dict[str, object] = dict(
+            path=Path("/tmp/repo"),
+            display_path="repo",
+            fetch_failed=False,
+            status_segments=[],
+            branch="main",
+            remote="-",
+            remote_url="-",
+            ident=None,
+            dirty=False,
+            latest_mtime=None,
+        )
+        defaults.update(kwargs)
+        return RepoReport(**defaults)  # type: ignore[arg-type]
+
+    def test_supported_sort_modes(self) -> None:
+        reports = [
+            self._make_report(
+                display_path="bravo/repo-b",
+                path=Path("/tmp/zulu/repo-b"),
+                branch="main",
+                remote="origin/main",
+                remote_url="github.com/example/repo-b",
+                ident="Zed <zed@example.com>",
+                latest_mtime=20.0,
+            ),
+            self._make_report(
+                display_path="alpha/repo-c",
+                path=Path("/tmp/alpha/repo-c"),
+                status_segments=[("2m", "yellow", "core")],
+                branch="feature",
+                remote="-",
+                remote_url="-",
+                ident="Amy <amy@example.com>",
+                latest_mtime=10.0,
+            ),
+            self._make_report(
+                display_path="charlie/repo-a",
+                path=Path("/tmp/beta/repo-a"),
+                status_segments=[("1u", "red", "core")],
+                branch="dev",
+                remote="upstream/dev",
+                remote_url="example.com/repo-a",
+                ident=None,
+                latest_mtime=None,
+            ),
+        ]
+
+        expected_orders = {
+            SortMode.DIR: ["alpha/repo-c", "bravo/repo-b", "charlie/repo-a"],
+            SortMode.PATH: ["alpha/repo-c", "charlie/repo-a", "bravo/repo-b"],
+            SortMode.NAME: ["charlie/repo-a", "bravo/repo-b", "alpha/repo-c"],
+            SortMode.STATUS: ["charlie/repo-a", "alpha/repo-c", "bravo/repo-b"],
+            SortMode.BRANCH_REMOTE: ["charlie/repo-a", "alpha/repo-c", "bravo/repo-b"],
+            SortMode.BRANCH: ["charlie/repo-a", "alpha/repo-c", "bravo/repo-b"],
+            SortMode.REMOTE: ["alpha/repo-c", "bravo/repo-b", "charlie/repo-a"],
+            SortMode.URL: ["alpha/repo-c", "charlie/repo-a", "bravo/repo-b"],
+            SortMode.MTIME: ["charlie/repo-a", "alpha/repo-c", "bravo/repo-b"],
+            SortMode.IDENT: ["charlie/repo-a", "alpha/repo-c", "bravo/repo-b"],
+            SortMode.AUTHOR: ["charlie/repo-a", "alpha/repo-c", "bravo/repo-b"],
+        }
+
+        self.assertEqual(
+            set(expected_orders),
+            set(SortMode) - {SortMode.NONE},
+        )
+
+        for sort_mode, expected in expected_orders.items():
+            ordered = list(reports)
+            _sort_reports(ordered, sort=sort_mode, reverse=False)
+            self.assertEqual(
+                [report.display_path for report in ordered],
+                expected,
+                msg=f"unexpected order for {sort_mode.value}",
+            )
+
+    def test_reverse_sort_applies_to_selected_mode(self) -> None:
+        reports = [
+            self._make_report(display_path="b", path=Path("/tmp/b")),
+            self._make_report(display_path="a", path=Path("/tmp/a")),
+            self._make_report(display_path="c", path=Path("/tmp/c")),
+        ]
+
+        _sort_reports(reports, sort=SortMode.DIR, reverse=True)
+        self.assertEqual([report.display_path for report in reports], ["c", "b", "a"])
+
+    def test_reverse_without_sort_reverses_current_order(self) -> None:
+        reports = [
+            self._make_report(display_path="first"),
+            self._make_report(display_path="second"),
+            self._make_report(display_path="third"),
+        ]
+
+        _sort_reports(reports, sort=SortMode.NONE, reverse=True)
+        self.assertEqual(
+            [report.display_path for report in reports],
+            ["third", "second", "first"],
+        )
 
 
 class PrintReportsTests(unittest.TestCase):

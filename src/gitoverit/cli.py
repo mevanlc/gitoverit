@@ -31,7 +31,16 @@ class OutputFormat(str, Enum):
 
 
 class SortMode(str, Enum):
+    DIR = "dir"
+    PATH = "path"
+    NAME = "name"
+    STATUS = "status"
+    BRANCH_REMOTE = "branch_remote"
+    BRANCH = "branch"
+    REMOTE = "remote"
+    URL = "url"
     MTIME = "mtime"
+    IDENT = "ident"
     AUTHOR = "author"
     NONE = "none"
 
@@ -153,7 +162,7 @@ def cli(
         SortMode.MTIME,
         "-s", "--sort",
         case_sensitive=False,
-        help="Sort repositories by mtime (default), author, or disable sorting with none",
+        help="Sort repositories by any supported field; default is mtime.",
     ),
     reverse: bool = typer.Option(
         False,
@@ -317,15 +326,36 @@ def _print_reports(
 
 
 def _sort_reports(reports: List[RepoReport], *, sort: SortMode, reverse: bool) -> None:
+    if sort is SortMode.NONE:
+        if reverse:
+            reports.reverse()
+        return
+
+    reports.sort(key=lambda report: _report_sort_key(report, sort), reverse=reverse)
+
+
+def _report_sort_key(report: RepoReport, sort: SortMode) -> object:
+    if sort is SortMode.DIR:
+        return report.display_path.casefold()
+    if sort is SortMode.PATH:
+        return str(report.path).casefold()
+    if sort is SortMode.NAME:
+        return report.path.name.casefold()
+    if sort is SortMode.STATUS:
+        return render_status_segments(report.status_segments).casefold()
+    if sort is SortMode.BRANCH_REMOTE:
+        return (report.branch.casefold(), report.remote.casefold())
+    if sort is SortMode.BRANCH:
+        return report.branch.casefold()
+    if sort is SortMode.REMOTE:
+        return report.remote.casefold()
+    if sort is SortMode.URL:
+        return report.remote_url.casefold()
     if sort is SortMode.MTIME:
-        reports.sort(key=lambda report: report.latest_mtime or 0.0, reverse=reverse)
-    elif sort is SortMode.AUTHOR:
-        reports.sort(
-            key=lambda report: (report.ident or "").lower(),
-            reverse=reverse,
-        )
-    elif reverse:
-        reports.reverse()
+        return report.latest_mtime or 0.0
+    if sort in {SortMode.IDENT, SortMode.AUTHOR}:
+        return (report.ident or "").casefold()
+    raise ValueError(f"Unsupported sort mode: {sort}")
 
 
 def _emit_errors(errors: list[tuple[Path, TracebackException | None]]) -> None:

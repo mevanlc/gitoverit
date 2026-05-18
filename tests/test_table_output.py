@@ -13,6 +13,7 @@ from gitoverit.output.table import (
     _as_responsive,
     _branch_remote_cell,
     _mtime_cell,
+    _remote_cell,
     _status_cell,
     _url_cell,
 )
@@ -46,7 +47,7 @@ class TableKeyOutputTests(unittest.TestCase):
         self.assertIn("m\u00A0modified", output)
         self.assertIn("u\u00A0untracked", output)
         self.assertIn("d\u00A0deleted", output)
-        self.assertIn("+/-\u00A0lines\u00A0added/removed", output)
+        self.assertIn("+/-\u00A0added/removed", output)
         self.assertIn("↑\u00A0ahead", output)
         self.assertIn("↓\u00A0behind", output)
         self.assertIn("s\u00A0submodules", output)
@@ -65,15 +66,18 @@ class TableKeyOutputTests(unittest.TestCase):
         output_bang = console_bang.export_text()
         self.assertIn("any of: conflicts", output_bang)
 
-    def test_default_columns_use_branch_remote_and_mtime(self) -> None:
+    def test_default_columns_use_branch_and_remote_and_mtime(self) -> None:
         console = Console(record=True, width=120)
         report = self._make_report(status_segments=[("1m", "yellow", "core")])
 
         render_table(console, [report])
         output = console.export_text()
 
-        self.assertIn("Branch:Remote", output)
-        self.assertIn("main:-", output)
+        self.assertIn("Branch", output)
+        self.assertIn("Remote", output)
+        self.assertNotIn("Branch:Remote", output)
+        self.assertNotIn("main:-", output)
+        self.assertIn("main", output)
         self.assertIn("Modified", output)
 
 
@@ -320,6 +324,22 @@ class ColumnLadderTests(unittest.TestCase):
         cell = _branch_remote_cell("main", "origin")
         plains = [v.plain for v in cell.variants]
         self.assertEqual(plains, ["main:origin", "main:…"])
+
+    def test_remote_cell_dims_remote_name_and_separator(self) -> None:
+        cell = _remote_cell("origin/main")
+        text = cell.variants[0]
+
+        self.assertEqual(text.plain, "origin/main")
+        self.assertEqual(
+            [(span.start, span.end, str(span.style)) for span in text.spans],
+            [(0, 6, "color(245)"), (6, 7, "color(240)")],
+        )
+
+    def test_remote_cell_without_slash_is_plain(self) -> None:
+        cell = _remote_cell("-")
+
+        self.assertEqual(cell.variants[0].plain, "-")
+        self.assertEqual(cell.variants[0].spans, [])
 
     def test_url_ladder(self) -> None:
         cell = _url_cell("termux/termux-api-package")

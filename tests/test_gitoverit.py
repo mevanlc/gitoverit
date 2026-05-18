@@ -7,10 +7,17 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from git import Actor, Repo
+from typer.testing import CliRunner
 
-from gitoverit.cli import SortMode, _filter_reports, _print_reports, _sort_reports
 from gitoverit.output import render_json
 from gitoverit.output.table import DEFAULT_COLUMNS, parse_columns
+from gitoverit.repos_cli import (
+    APP,
+    SortMode,
+    _filter_reports,
+    _print_reports,
+    _sort_reports,
+)
 from gitoverit.reporting import (
     ParsedStatus,
     RepoReport,
@@ -23,6 +30,19 @@ from gitoverit.reporting import (
 )
 
 AUTHOR = Actor("Tester", "tester@example.com")
+RUNNER = CliRunner()
+
+
+class ReposCliTests(unittest.TestCase):
+    def test_help_renders_repo_command_help(self) -> None:
+        result = RUNNER.invoke(APP, ["--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Scan git repositories beneath the given directories", result.stdout)
+
+    def test_help_where_renders_expression_help(self) -> None:
+        result = RUNNER.invoke(APP, ["--help-where"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Filter expressions for --where / -w", result.stdout)
 
 
 class ParseStatusTests(unittest.TestCase):
@@ -103,11 +123,11 @@ class ParseColumnsTests(unittest.TestCase):
 
     def test_remove_single(self) -> None:
         result = parse_columns("-mtime")
-        self.assertEqual(result, ["dir", "status", "branch_remote", "url"])
+        self.assertEqual(result, ["dir", "status", "branch", "remote", "url"])
 
     def test_remove_multiple(self) -> None:
         result = parse_columns("-mtime,-remote")
-        self.assertEqual(result, ["dir", "status", "branch_remote", "url"])
+        self.assertEqual(result, ["dir", "status", "branch", "url"])
 
     def test_clear_then_add(self) -> None:
         result = parse_columns("-,url,branch,status,dir")
@@ -116,7 +136,7 @@ class ParseColumnsTests(unittest.TestCase):
     def test_last_mention_wins_readd(self) -> None:
         # Remove then re-add → included, appended at end
         result = parse_columns("-dir,dir")
-        self.assertEqual(result, ["status", "branch_remote", "url", "mtime", "dir"])
+        self.assertEqual(result, ["status", "branch", "remote", "url", "mtime", "dir"])
 
     def test_last_mention_wins_remove(self) -> None:
         # Add then remove → excluded
@@ -126,12 +146,12 @@ class ParseColumnsTests(unittest.TestCase):
     def test_add_moves_to_end(self) -> None:
         # Mentioning an existing column moves it to the end
         result = parse_columns("dir")
-        self.assertEqual(result, ["status", "branch_remote", "url", "mtime", "dir"])
+        self.assertEqual(result, ["status", "branch", "remote", "url", "mtime", "dir"])
 
     def test_non_default_columns_can_be_added(self) -> None:
-        result = parse_columns("branch,remote")
+        result = parse_columns("branch_remote,ident")
         self.assertEqual(
-            result, ["dir", "status", "branch_remote", "url", "mtime", "branch", "remote"]
+            result, ["dir", "status", "branch", "remote", "url", "mtime", "branch_remote", "ident"]
         )
 
     def test_unknown_column_raises(self) -> None:

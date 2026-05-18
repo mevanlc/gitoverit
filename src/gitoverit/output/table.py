@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -15,6 +14,7 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 
+from ..config import load_config
 from ..reporting import RepoReport
 
 
@@ -606,7 +606,16 @@ class AutoTable:
         if not self._columns:
             return
 
-        content_widths = self._calculate_layout(options.max_width)
+        effective_max_width = options.max_width
+        explicit_console_width = getattr(console, "_width", None)
+        if isinstance(explicit_console_width, int) and explicit_console_width > 0:
+            # On Python 3.13 / Rich 14, Console(width=...) keeps the requested
+            # width on `console._width` but may still surface an 80-column
+            # `options.max_width` here. Honor the explicit width when it is
+            # narrower so tests and callers get deterministic sizing.
+            effective_max_width = min(effective_max_width, explicit_console_width)
+
+        content_widths = self._calculate_layout(effective_max_width)
         box_widths = [w + self.padding for w in content_widths]
 
         if self.box_style:
@@ -631,7 +640,7 @@ NBSP = "\u00A0"
 
 
 def _status_key_main() -> Text:
-    text = Text("  Status key: ")
+    text = Text("  ")
     first = True
 
     def add(symbol: str, description: str, style: str | None) -> None:
@@ -649,7 +658,7 @@ def _status_key_main() -> Text:
     add("m", "modified", "yellow")
     add("u", "untracked", "magenta")
     add("d", "deleted", "red")
-    add("+/-", f"lines{NBSP}added/removed", "cyan")
+    add("+/-", "added/removed", "cyan")
     add("↑", "ahead", "green")
     add("↓", "behind", "bright_black")
     add("s", "submodules", "blue")
@@ -659,7 +668,7 @@ def _status_key_main() -> Text:
 
 
 def _status_key_exceptional() -> Text:
-    text = Text("              ")
+    text = Text("  ")
     text.append("!", style="bold red")
     text.append(" ")
     text.append(
@@ -745,6 +754,15 @@ def _branch_remote_cell(branch: str, remote: str) -> ResponsiveCell:
     return ResponsiveCell(variants=tuple(deduped))
 
 
+def _remote_cell(remote: str) -> ResponsiveCell:
+    if "/" not in remote:
+        return _as_responsive(remote)
+    name, branch = remote.split("/", 1)
+    return ResponsiveCell(
+        variants=(Text.assemble((name, "color(245)"), ("/", "color(240)"), branch),)
+    )
+
+
 def _url_cell(url: str) -> ResponsiveCell:
     """'owner/repo' → 'owner/…' when a '/' exists."""
     v0 = Text(url)
@@ -770,18 +788,18 @@ def _branch_remote_header() -> ResponsiveCell:
     ))
 
 
-DEFAULT_COLUMNS = ["dir", "status", "branch_remote", "url", "mtime"]
+DEFAULT_COLUMNS = ["dir", "status", "branch", "remote", "url", "mtime"]
 
 # (header_factory, priority). header_factory returns a ResponsiveCell each
 # call so headers can't accidentally share mutable state.
 _COLUMN_DEFS: dict[str, tuple[Callable[[], ResponsiveCell], int]] = {
-    "dir": (lambda: _header_cell("Dir"), 50),
-    "status": (lambda: _header_cell("Status"), 50),
-    "branch_remote": (_branch_remote_header, 50),
-    "branch": (lambda: _header_cell("Branch", "Br"), 50),
-    "remote": (lambda: _header_cell("Remote", "Rm"), 30),
-    "url": (lambda: _header_cell("URL"), 30),
-    "mtime": (lambda: _header_cell("Modified", "Mtime"), 30),
+    "dir": (lambda: _header_cell("Dir"), 500),
+    "status": (lambda: _header_cell("Status"), 500),
+    "branch_remote": (_branch_remote_header, 500),
+    "branch": (lambda: _header_cell("Branch", "Br"), 500),
+    "remote": (lambda: _header_cell("Remote", "Rm"), 300),
+    "url": (lambda: _header_cell("URL"), 300),
+    "mtime": (lambda: _header_cell("Modified", "Mtime"), 1),
     "ident": (lambda: _header_cell("Ident"), 1),
 }
 
@@ -796,7 +814,7 @@ def _row_value(col: str, report: RepoReport) -> ResponsiveCell:
     if col == "branch":
         return _as_responsive(report.branch)
     if col == "remote":
-        return _as_responsive(report.remote)
+        return _remote_cell(report.remote)
     if col == "url":
         return _url_cell(report.remote_url)
     if col == "mtime":
@@ -851,12 +869,12 @@ def render_table(
         any(seg[0] == "!" for seg in report.status_segments) for report in reports
     )
 
-    # Allow priority override via environment variable
-    env_priorities = os.environ.get("GITOVERIT_COLUMN_PRIORITIES")
+    # Allow priority override via config (or env var, which wins in config.py).
+    configured = load_config().column_priorities
     priority_overrides: dict[str, int] = {}
-    if env_priorities:
+    if configured:
         try:
-            vals = [int(p.strip()) for p in env_priorities.split(",")]
+            vals = [int(p.strip()) for p in configured.split(",")]
             if len(vals) == len(DEFAULT_COLUMNS):
                 priority_overrides = dict(zip(DEFAULT_COLUMNS, vals))
         except ValueError:

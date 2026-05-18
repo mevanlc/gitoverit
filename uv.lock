@@ -54,16 +54,16 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "gitpython", specifier = ">=3.1.43" },
-    { name = "rich", specifier = ">=13.7.0" },
-    { name = "simpleeval", specifier = ">=1.0.0" },
-    { name = "typer", specifier = ">=0.12.0" },
+    { name = "gitpython", specifier = "==3.1.45" },
+    { name = "rich", specifier = "==14.1.0" },
+    { name = "simpleeval", specifier = "==1.0.3" },
+    { name = "typer", specifier = "==0.19.2" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pyright", specifier = ">=1.1.408" },
-    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "pyright", specifier = "==1.1.408" },
+    { name = "pytest", specifier = "==9.0.2" },
 ]
 
 [[package]]

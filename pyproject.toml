@@ -1,21 +1,23 @@
 [project]
 name = "gitoverit"
 version = "0.1.0"
-description = "Add your description here"
+description = "Run git commands over collections of things (repos, branches)."
 readme = "README.md"
 authors = [
     { name = "mevanlc", email = "mevanlc@gmail.com" }
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "typer>=0.12.0",
-    "rich>=13.7.0",
-    "GitPython>=3.1.43",
-    "simpleeval>=1.0.0",
+    "typer==0.19.2",
+    "rich==14.1.0",
+    "GitPython==3.1.45",
+    "simpleeval==1.0.3",
 ]
 
 [project.scripts]
 gitoverit = "gitoverit:main"
+gito = "gitoverit:main"
+gitob = "gitoverit.branches_cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -23,6 +25,6 @@ build-backend = "setuptools.build_meta"
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1.408",
-    "pytest>=9.0.2",
+    "pyright==1.1.408",
+    "pytest==9.0.2",
 ]

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from pathlib import Path
 from traceback import TracebackException
@@ -8,10 +7,12 @@ from typing import IO, Protocol
 
 from rich.console import Console
 
+from .config import level_value, load_config
+
 
 def _get_debug_log() -> IO[str] | None:
-    """Open debug log file if GITOVERIT_DEBUG_LOG is set."""
-    log_path = os.environ.get("GITOVERIT_DEBUG_LOG")
+    """Open debug log file if configured."""
+    log_path = load_config().log_file
     if not log_path:
         return None
     try:
@@ -20,13 +21,15 @@ def _get_debug_log() -> IO[str] | None:
         return None
 
 
-def _log(log: IO[str] | None, event: str, **kwargs: object) -> None:
-    """Write a timestamped log entry."""
+def _log(log: IO[str] | None, event: str, *, level: str = "DEBUG", **kwargs: object) -> None:
+    """Write a timestamped log entry if level meets the configured threshold."""
     if log is None:
+        return
+    if level_value(level) < level_value(load_config().log_level):
         return
     ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     details = " ".join(f"{k}={v}" for k, v in kwargs.items())
-    log.write(f"{ts} {event} {details}\n")
+    log.write(f"{ts} {level} {event} {details}\n")
 from rich.progress import (
     BarColumn,
     Progress,
@@ -80,7 +83,7 @@ class SilentHook:
             exc_type = tb.exc_type.__name__ if tb.exc_type else "?"
             exc_msg = str(tb).split("\n")[-1].strip()
             exc_info = f"{exc_type}: {exc_msg}"
-        _log(self._log, "error", path=path, exc=exc_info)
+        _log(self._log, "error", level="ERROR", path=path, exc=exc_info)
         self.errors.append((path, tb))
 
     def get_errors(self) -> list[tuple[Path, TracebackException | None]]:
@@ -202,7 +205,7 @@ class RichHook(HookProtocol):
             exc_type = tb.exc_type.__name__ if tb.exc_type else "?"
             exc_msg = str(tb).split("\n")[-1].strip()
             exc_info = f"{exc_type}: {exc_msg}"
-        _log(self._log, "error", path=path, exc=exc_info)
+        _log(self._log, "error", level="ERROR", path=path, exc=exc_info)
         self.error_count += 1
         self.errors.append((path, tb))
 

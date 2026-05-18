@@ -1,9 +1,12 @@
 # gitoverit
 
-* A CLI that walks directories, finds Git repositories, and prints a status summary as a table or JSON.
-* Also includes a powerful Python-based expression language for filtering repos and operating on them in batch.
+`gitoverit` runs Git-oriented status views over repositories and branches.
 
-![](https://i.imgur.com/Ffvx8GI.png)
+The package stays named `gitoverit`, and installs three direct commands:
+
+- `gitoverit` - recursively find repositories and print a repo status table
+- `gito` - same repo status command as `gitoverit`
+- `gitob` - show local branches inside one repository, including linked worktree occupancy
 
 ## Install
 
@@ -11,177 +14,91 @@
 uv tool install .
 ```
 
-To pick up local code changes when the version hasn't been bumped:
-
-```bash
-uv tool install --force --reinstall .
-```
-
-For development (editable install):
+For development:
 
 ```bash
 uv tool install -e --force .
 ```
 
-## Usage
+## Repo Status
 
+```bash
+gitoverit [OPTIONS] [DIRS]...
+gito [OPTIONS] [DIRS]...
 ```
-gitoverit [OPTIONS] [DIRS...]
-```
 
-If no directory is given, the current directory is used. Run with `-h` for the option list.
+If no directory is given, the current directory is used.
 
-### Options
+Common options:
 
-```
--f, --fetch                Run `git fetch --all` for each repo before inspection.
-    --pull-safe            Fetch first, then run `git pull --ff-only` only for
-                           repos that are behind, not ahead, and otherwise clean.
+```text
+-f, --fetch                Run git fetch --all before inspection.
+    --pull-safe            Fetch first, then fast-forward only safe clean repos.
 -o, --format {table,json}  Output format. Default: table.
--d, --dirty-only           Hide repos with no uncommitted changes.
--s, --sort {mtime,author,none}
-                           Sort by latest worktree mtime (default), committer
-                           identity, or disable sorting.
--r, --reverse              Reverse the active sort order.
--j, --jobs N               Worker count. Omit for auto-detect; 0 for sequential.
+-d, --dirty-only           Hide repos without uncommitted changes.
+-s, --sort FIELD           Sort by dir, path, name, status, branch, remote, url, mtime, ident, author, or none.
+-r, --reverse              Reverse sort order.
+-j, --jobs N               Worker count. Omit for auto; 0 for sequential.
 -a, --table-algo {cell,char}
-                           Column-width algorithm for the table renderer.
--c, --columns SPEC         Add/remove/reset columns. See "Columns" below.
--w, --where EXPR           Filter rows by an expression. See `--help-where`.
--p, --print EXPR           Evaluate EXPR per repo and print the result, one
-                           per line. Replaces table/JSON output.
--0, --print0               With --print, separate results with NUL bytes
-                           instead of newlines.
-    --errors               Print error tracebacks to stderr after output.
-    --no-progress          Suppress the progress bar even on a TTY.
-    --help-where           Show full reference for --where / --print.
+-c, --columns SPEC         Add/remove/reset table columns.
+-w, --where EXPR           Filter rows by expression.
+-p, --print EXPR           Print one expression result per repo.
+-0, --print0               Use NUL delimiters with --print.
+    --errors               Print collected errors after output.
+    --no-progress          Suppress interactive progress.
+    --help-where           Show expression reference.
 ```
 
-### Columns
-
-`--columns` takes a comma-separated spec. A bare name adds a column,
-`-name` removes one, and a single `-` clears all columns first so the
-remainder of the spec defines the full set.
-
-Available columns: `dir`, `status`, `branch_remote`, `branch`, `remote`,
-`url`, `mtime`, `ident`.
+Examples:
 
 ```bash
-# Drop the URL column
-gitoverit ~/projects -c -url
-
-# Show only dir and status
-gitoverit ~/projects -c -,dir,status
+gitoverit ~/projects
+gito ~/projects -d -s author
+gito ~/projects -f -o json
+gito ~/projects -w 'branch != "main" and ahead > 0'
+gito ~/projects -w dirty -p path -0 | xargs -0 -n1 echo
 ```
 
-### Examples
+## Branch Status
 
 ```bash
-# Scan the current directory
-gitoverit .
-
-# Scan multiple roots
-gitoverit ~/projects ~/work
-
-# Sequential mode
-gitoverit ~/projects -j 0
-
-# 4 workers
-gitoverit ~/projects -j 4
-
-# Dirty repos only, sorted by author
-gitoverit ~/projects -d -s author
-
-# Fetch first, then output JSON
-gitoverit ~/projects -f -o json
-
-# Safely fast-forward repos that are behind upstream
-gitoverit ~/projects --pull-safe
-
-# Repos on a non-main branch with unpushed commits
-gitoverit ~/projects -w 'branch != "main" and ahead > 0'
-
-# Print absolute paths of dirty repos, NUL-delimited (xargs-friendly)
-gitoverit ~/projects -w dirty -p path -0 | xargs -0 -n1 echo
+gitob [OPTIONS] [REPO_DIR]
 ```
 
-## Filtering and printing
+If no repository directory is given, the current directory is used.
 
-`--where` and `--print` share an expression language (sandboxed via
-`simpleeval`). Variables include `path`, `dir`, `status`, `branch`,
-`remote`, `url`, `ident`, `mtime`, `dirty`, `ahead`, `behind`,
-`modified`, `untracked`, and `deleted`. String variables expose `.rx()`
-and `.rxi()` for regex matching.
+Common options:
 
-Run `gitoverit --help-where` for the full reference and more examples.
+```text
+-f, --fetch                Run git fetch --all --prune first.
+-j, --json                 Output JSON instead of a table.
+-g, --glob PATTERN         Include branches matching a glob.
+-r, --regex PATTERN        Include branches matching a regex.
+-s, --sort FIELD           Sort by branch, date, author, ahead, behind, status, upstream, current, head, subject, worktree, gone, or none.
+    --reverse              Reverse sort order.
+-p, --print EXPR           Print one expression result per branch.
+-0, --print0               Use NUL delimiters with --print.
+-a, --table-algo {cell,char}
+-c, --columns SPEC         Add/remove/reset table columns.
+-w, --where EXPR           Filter rows by expression.
+    --help-where           Show expression reference.
+```
 
-### Recipes
-
-Push every repo that's ahead of its tracking branch, clean, and not behind:
+Examples:
 
 ```bash
-gitoverit ~/projects -f -w 'ahead and not behind and not dirty' -p path -0 \
-  | xargs -0 -I{} git -C {} push
+gitob .
+gitob ~/projects/gitoverit --json
+gitob -g 'feature/*'
+gitob -w 'gone or ahead > 0'
+gitob -p branch -0 | xargs -0 -n1 git branch -D
 ```
-
-Pull every repo that's behind its tracking branch, clean, and not ahead:
-
-```bash
-gitoverit ~/projects -f -w 'behind and not ahead and not dirty' -p path -0 \
-  | xargs -0 -I{} git -C {} pull
-```
-
-`--pull-safe` only pulls repos that are in a state where pulling is unlikely
-to create merge conflicts. To pull more aggressively, use the `-p` + `xargs`
-recipe above.
-
-List repos that have diverged (commits in both directions) so you can
-resolve them by hand:
-
-```bash
-gitoverit ~/projects -f -w 'ahead and behind'
-```
-
-List repos with no upstream tracking branch:
-
-```bash
-gitoverit ~/projects -w 'remote == "-"'
-```
-
-Find repos hosted under a specific GitHub org (substring match on the
-remote URL):
-
-```bash
-gitoverit ~/projects -w '"acme/" in url'
-```
-
-Print `<dir> <branch>` for every repo not on `main` or `master`, useful
-for piping into other tooling:
-
-```bash
-gitoverit ~/projects -w 'branch != "main" and branch != "master"' \
-  -p 'dir + " " + branch'
-```
-
-## Parallelism
-
-Repositories are analyzed in a `ThreadPoolExecutor`; threads are a good
-fit because per-repo work is dominated by `git` subprocess I/O. Discovery
-streams into the pool so workers start immediately.
-
-The default worker count is `cpu_count - 1`, capped at 8. Override with
-`-j N`, or use `-j 0` to run on the main thread (useful for debugging).
-
-## Progress and TTY behavior
-
-When stdout is a TTY, a Rich progress bar is shown: an indeterminate
-"Discovery" phase followed by a determinate "Statusing" bar. Pass
-`--no-progress` to suppress it. When stdout is not a TTY, no progress
-output is emitted.
-
-To implement a custom progress reporter, see `HookProtocol` in
-`src/gitoverit/progress.py`.
 
 ## Development
 
-I don't consider this project "vibe coded." I used AI assistance to help with planning, rubberducking, and writing some of the code. I myself know and have reviewed the code.
+Tasks are uv-managed:
+
+```bash
+uv run tasks/test
+uv run tasks/check
+```

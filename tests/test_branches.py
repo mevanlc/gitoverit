@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from typer.testing import CliRunner
 
 from gitoverit.branches import collect_branch_reports
-from gitoverit.branches_cli import APP
+from gitoverit.branches_cli import APP, SortMode
 
 RUNNER = CliRunner()
 
@@ -109,6 +109,10 @@ class BranchCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("--glob", result.stdout)
         self.assertIn("--json", result.stdout)
+        self.assertIn("FIELD", result.stdout)
+        self.assertIn("Valid fields:", result.stdout)
+        for sort_mode in SortMode:
+            self.assertIn(sort_mode.value, result.stdout)
 
     def test_json_output_includes_branch_fields(self) -> None:
         with TemporaryDirectory() as tmpdir:

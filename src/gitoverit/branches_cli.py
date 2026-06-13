@@ -41,6 +41,9 @@ class SortMode(str, Enum):
     NONE = "none"
 
 
+SORT_MODE_FIELDS = ", ".join(mode.value for mode in SortMode)
+
+
 class TableAlgo(str, Enum):
     CELL = "cell"
     CHAR = "char"
@@ -165,7 +168,8 @@ def branches(
         "-s",
         "--sort",
         case_sensitive=False,
-        help="Sort branches by any supported field; default is branch.",
+        metavar="FIELD",
+        help=f"Sort branches by FIELD; default is branch. Valid fields: {SORT_MODE_FIELDS}.",
     ),
     reverse: bool = typer.Option(
         False,

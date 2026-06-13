@@ -49,6 +49,9 @@ class SortMode(str, Enum):
     NONE = "none"
 
 
+SORT_MODE_FIELDS = ", ".join(mode.value for mode in SortMode)
+
+
 class TableAlgo(str, Enum):
     CELL = "cell"
     CHAR = "char"
@@ -185,7 +188,8 @@ def repos(
         None,
         "-s", "--sort",
         case_sensitive=False,
-        help="Sort repositories by any supported field; default is mtime, or dir with --metadata-only.",
+        metavar="FIELD",
+        help=f"Sort repositories by FIELD; default is mtime, or dir with --metadata-only. Valid fields: {SORT_MODE_FIELDS}.",
     ),
     reverse: bool = typer.Option(
         False,

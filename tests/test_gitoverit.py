@@ -44,6 +44,10 @@ class ReposCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Scan git repositories beneath the given directories", result.stdout)
         self.assertIn("--metadata-only", result.stdout)
+        self.assertIn("FIELD", result.stdout)
+        self.assertIn("Valid fields:", result.stdout)
+        for sort_mode in SortMode:
+            self.assertIn(sort_mode.value, result.stdout)
 
     def test_help_where_renders_expression_help(self) -> None:
         result = RUNNER.invoke(APP, ["--help-where"])

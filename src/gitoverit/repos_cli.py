@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 import re
 import sys
@@ -13,6 +14,7 @@ from rich.console import Console
 from simpleeval import DEFAULT_NAMES, SimpleEval
 
 from .output import parse_columns, render_json, render_table
+from .output.table import METADATA_ONLY_DEFAULT_COLUMNS
 from .progress import RichHook, SilentHook
 from .reporting import RepoReport, collect_reports_parallel, render_status_segments
 
@@ -80,6 +82,9 @@ VARIABLES
 
   Booleans:
     dirty    True if the repo has uncommitted local changes
+
+  With --metadata-only, dirty, modified, untracked, deleted, mtime, and
+  latest_mtime are unavailable because worktree files are not inspected.
 
 OPERATORS
 
@@ -165,17 +170,22 @@ def repos(
     dirty_only: bool = typer.Option(
         False, "-d", "--dirty-only", help="Display only repositories with uncommitted local changes."
     ),
+    metadata_only: bool = typer.Option(
+        False,
+        "--metadata-only",
+        help="Skip worktree file inspection; dirty state, file counts, and mtime are unavailable.",
+    ),
     include_ignored: bool = typer.Option(
         False,
         "-I",
         "--include-ignored",
         help="Include nested repositories even when ignored by a parent repository.",
     ),
-    sort: SortMode = typer.Option(
-        SortMode.MTIME,
+    sort: Optional[SortMode] = typer.Option(
+        None,
         "-s", "--sort",
         case_sensitive=False,
-        help="Sort repositories by any supported field; default is mtime.",
+        help="Sort repositories by any supported field; default is mtime, or dir with --metadata-only.",
     ),
     reverse: bool = typer.Option(
         False,
@@ -236,6 +246,16 @@ def repos(
 ) -> None:
     """Scan git repositories beneath the given directories and show their status."""
 
+    _validate_metadata_only_options(
+        metadata_only=metadata_only,
+        dirty_only=dirty_only,
+        pull_safe=pull_safe,
+        sort=sort,
+        where=where,
+        print_expr=print_expr,
+    )
+    effective_sort = sort or (SortMode.DIR if metadata_only else SortMode.MTIME)
+
     if _stdout_is_tty() and not no_progress:
         hook = RichHook(console)
     elif show_errors:
@@ -249,11 +269,12 @@ def repos(
         dirty_only=dirty_only,
         include_ignored=include_ignored,
         pull_safe=pull_safe,
+        metadata_only=metadata_only,
         hook=hook,
         max_workers=parallel,  # None means auto-detect, 0 means sequential, N means N workers
     )
 
-    _sort_reports(reports, sort=sort, reverse=reverse)
+    _sort_reports(reports, sort=effective_sort, reverse=reverse)
 
     if where:
         reports = _filter_reports(reports, where)
@@ -263,7 +284,14 @@ def repos(
     elif output_format is OutputFormat.JSON:
         typer.echo(render_json(reports))
     else:
-        columns = parse_columns(columns_spec) if columns_spec else None
+        if metadata_only:
+            columns = (
+                parse_columns(columns_spec, defaults=METADATA_ONLY_DEFAULT_COLUMNS)
+                if columns_spec
+                else METADATA_ONLY_DEFAULT_COLUMNS
+            )
+        else:
+            columns = parse_columns(columns_spec) if columns_spec else None
         minimize_chars = table_algo is TableAlgo.CHAR
         render_table(console, reports, minimize_chars=minimize_chars, columns=columns)
 
@@ -289,8 +317,65 @@ def _rxi(value: str, pattern: str) -> bool:
     return bool(re.search(pattern, value, re.IGNORECASE))
 
 
+_METADATA_ONLY_UNAVAILABLE_NAMES = frozenset(
+    {"dirty", "modified", "untracked", "deleted", "mtime", "latest_mtime"}
+)
+
+
+def _expression_names(expr: str) -> set[str]:
+    try:
+        parsed = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return set()
+    return {node.id for node in ast.walk(parsed) if isinstance(node, ast.Name)}
+
+
+def _validate_metadata_only_options(
+    *,
+    metadata_only: bool,
+    dirty_only: bool,
+    pull_safe: bool,
+    sort: SortMode | None,
+    where: str | None,
+    print_expr: str | None,
+) -> None:
+    if not metadata_only:
+        return
+    if dirty_only:
+        raise typer.BadParameter(
+            "cannot be used with --metadata-only because dirty state is unavailable",
+            param_hint="--dirty-only",
+        )
+    if pull_safe:
+        raise typer.BadParameter(
+            "cannot be used with --metadata-only because a clean worktree cannot be verified",
+            param_hint="--pull-safe",
+        )
+    if sort is SortMode.MTIME:
+        raise typer.BadParameter(
+            "cannot be used with --metadata-only because worktree mtime is unavailable",
+            param_hint="--sort mtime",
+        )
+    for param_hint, expr in (("--where", where), ("--print", print_expr)):
+        if expr is None:
+            continue
+        unavailable = sorted(
+            _expression_names(expr) & _METADATA_ONLY_UNAVAILABLE_NAMES
+        )
+        if unavailable:
+            names = ", ".join(unavailable)
+            raise typer.BadParameter(
+                f"cannot use unavailable metadata-only variable(s): {names}",
+                param_hint=param_hint,
+            )
+
+
 def _report_names(report: RepoReport) -> dict[str, object]:
-    mtime = report.latest_mtime or 0.0
+    mtime = (
+        report.latest_mtime or 0.0
+        if report.worktree_status_checked
+        else None
+    )
     names = dict(DEFAULT_NAMES)
     names.update(
         path=_RxStr(str(report.path)),

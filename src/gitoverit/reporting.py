@@ -28,15 +28,16 @@ class RepoReport:
     remote: str
     remote_url: str
     ident: str | None
-    dirty: bool
+    dirty: bool | None
     latest_mtime: float | None
     ahead: int = 0
     behind: int = 0
-    modified: int = 0
-    untracked: int = 0
-    deleted: int = 0
+    modified: int | None = 0
+    untracked: int | None = 0
+    deleted: int | None = 0
     pull_failed: bool = False
     pulled: bool = False
+    worktree_status_checked: bool = True
 
     def status_text(self) -> Text:
         if not self.status_segments:
@@ -73,6 +74,7 @@ class RepoState:
     ident: str | None
     latest_mtime: float | None
     dirty: bool
+    worktree_status_checked: bool = True
 
 
 EXCEPTION_SENTINELS = (
@@ -93,6 +95,7 @@ def collect_reports(
     dirty_only: bool,
     include_ignored: bool = False,
     pull_safe: bool = False,
+    metadata_only: bool = False,
     hook: HookProtocol | None = None,
 ) -> list[RepoReport]:
     # Backwards-compatible wrapper for sequential runs.
@@ -102,6 +105,7 @@ def collect_reports(
         dirty_only=dirty_only,
         include_ignored=include_ignored,
         pull_safe=pull_safe,
+        metadata_only=metadata_only,
         hook=hook,
         max_workers=0,
     )
@@ -126,6 +130,7 @@ def collect_reports_parallel(
     dirty_only: bool,
     include_ignored: bool = False,
     pull_safe: bool = False,
+    metadata_only: bool = False,
     hook: HookProtocol | None = None,
     max_workers: int | None = None,
 ) -> list[RepoReport]:
@@ -162,6 +167,7 @@ def collect_reports_parallel(
                         repo_path,
                         fetch=fetch,
                         pull_safe=pull_safe,
+                        metadata_only=metadata_only,
                     )
                     if not (
                         dirty_only
@@ -211,6 +217,7 @@ def collect_reports_parallel(
                         repo_path,
                         fetch,
                         pull_safe,
+                        metadata_only,
                     )
                     futures[future] = repo_path
 
@@ -320,7 +327,12 @@ def _is_gitignored_by_parent(path: Path, known_repos: list[Path]) -> bool:
     return result.returncode == 0
 
 
-def analyze_repository(path: Path, fetch: bool, pull_safe: bool = False) -> RepoReport:
+def analyze_repository(
+    path: Path,
+    fetch: bool,
+    pull_safe: bool = False,
+    metadata_only: bool = False,
+) -> RepoReport:
     repo = Repo(path)
     fetch_failed = False
     pull_failed = False
@@ -330,14 +342,14 @@ def analyze_repository(path: Path, fetch: bool, pull_safe: bool = False) -> Repo
         if not _run_git_operation(path, "fetch", "--all", timeout=60):
             fetch_failed = True
 
-    state = _collect_repo_state(repo)
+    state = _collect_repo_state(repo, metadata_only=metadata_only)
 
     if pull_safe and _can_pull_safely(state, fetch_failed=fetch_failed):
         if _run_git_operation(path, "pull", "--ff-only", timeout=120):
             pulled = True
         else:
             pull_failed = True
-        state = _collect_repo_state(repo)
+        state = _collect_repo_state(repo, metadata_only=metadata_only)
 
     segments = _render_repo_state_segments(state, pulled=pulled)
 
@@ -356,13 +368,14 @@ def analyze_repository(path: Path, fetch: bool, pull_safe: bool = False) -> Repo
         remote=state.remote_ref or "-",
         remote_url=state.remote_url or "-",
         ident=state.ident,
-        dirty=state.dirty,
+        dirty=state.dirty if state.worktree_status_checked else None,
         latest_mtime=state.latest_mtime,
         ahead=state.ahead,
         behind=state.behind,
-        modified=state.parsed.modified_count,
-        untracked=state.parsed.untracked_count,
-        deleted=state.parsed.deleted_count,
+        modified=(state.parsed.modified_count if state.worktree_status_checked else None),
+        untracked=(state.parsed.untracked_count if state.worktree_status_checked else None),
+        deleted=(state.parsed.deleted_count if state.worktree_status_checked else None),
+        worktree_status_checked=state.worktree_status_checked,
     )
 
 
@@ -379,10 +392,16 @@ def _run_git_operation(path: Path, *args: str, timeout: int) -> bool:
     return result.returncode == 0
 
 
-def _collect_repo_state(repo: Repo) -> RepoState:
-    status = repo.git.status("--porcelain")
-    parsed = parse_status_porcelain(status)
-    additions, deletions = diff_numstat_totals(repo)
+def _collect_repo_state(repo: Repo, *, metadata_only: bool = False) -> RepoState:
+    if metadata_only:
+        parsed = ParsedStatus(0, 0, 0, False)
+        additions = deletions = 0
+        latest_mtime = None
+    else:
+        status = repo.git.status("--porcelain")
+        parsed = parse_status_porcelain(status)
+        additions, deletions = diff_numstat_totals(repo)
+        latest_mtime = latest_worktree_mtime(repo)
     ahead, behind, remote_ref, remote_url = compute_branch_tracking(repo)
     exceptional = has_exceptional_state(repo, parsed)
     return RepoState(
@@ -397,7 +416,7 @@ def _collect_repo_state(repo: Repo) -> RepoState:
         exceptional=exceptional,
         submodule_count=count_submodules(repo),
         ident=read_git_ident(repo),
-        latest_mtime=latest_worktree_mtime(repo),
+        latest_mtime=latest_mtime,
         dirty=bool(
             parsed.modified_count
             or additions
@@ -406,12 +425,14 @@ def _collect_repo_state(repo: Repo) -> RepoState:
             or parsed.deleted_count
             or exceptional
         ),
+        worktree_status_checked=not metadata_only,
     )
 
 
 def _can_pull_safely(state: RepoState, *, fetch_failed: bool) -> bool:
     return (
         not fetch_failed
+        and state.worktree_status_checked
         and state.behind > 0
         and state.ahead == 0
         and not state.dirty
@@ -425,6 +446,8 @@ def _render_repo_state_segments(
     pulled: bool,
 ) -> list[tuple[str, str | None, str]]:
     segments: list[tuple[str, str | None, str]] = []
+    if not state.worktree_status_checked:
+        segments.append(("?", "bright_black", "core"))
     if state.parsed.modified_count:
         segments.append((f"{state.parsed.modified_count}m", "yellow", "core"))
     if state.additions or state.deletions:

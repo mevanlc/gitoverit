@@ -15,6 +15,7 @@ def render_json(reports: Sequence[RepoReport]) -> str:
             "pull_failed": report.pull_failed,
             "pulled": report.pulled,
             "status": render_status_segments(report.status_segments),
+            "worktree_status_checked": report.worktree_status_checked,
             "branch": report.branch,
             "remote": report.remote,
             "remote_url": report.remote_url,

@@ -9,6 +9,7 @@ from rich.text import Text
 from gitoverit.output import render_table
 from gitoverit.output.table import (
     AutoTable,
+    METADATA_ONLY_DEFAULT_COLUMNS,
     ResponsiveCell,
     _as_responsive,
     _branch_remote_cell,
@@ -79,6 +80,23 @@ class TableKeyOutputTests(unittest.TestCase):
         self.assertNotIn("main:-", output)
         self.assertIn("main", output)
         self.assertIn("Modified", output)
+
+    def test_metadata_only_key_and_columns_mark_worktree_unchecked(self) -> None:
+        console = Console(record=True, width=120)
+        report = self._make_report(status_segments=[("?", "bright_black", "core")])
+        report.worktree_status_checked = False
+        report.dirty = None
+
+        render_table(
+            console,
+            [report],
+            columns=METADATA_ONLY_DEFAULT_COLUMNS,
+        )
+        output = console.export_text()
+
+        self.assertIn("?\u00A0worktree unchecked", output)
+        self.assertNotIn("m\u00A0modified", output)
+        self.assertNotIn("Modified", output)
 
 
 class AutoTableTests(unittest.TestCase):

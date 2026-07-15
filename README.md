@@ -36,6 +36,7 @@ Common options:
     --pull-safe            Fetch first, then fast-forward only safe clean repos.
 -o, --format {table,json}  Output format. Default: table.
 -d, --dirty-only           Hide repos without uncommitted changes.
+    --metadata-only        Skip worktree file inspection for a faster metadata crawl.
 -s, --sort FIELD           Sort by dir, path, name, status, branch, remote, url, mtime, ident, author, or none.
 -r, --reverse              Reverse sort order.
 -j, --jobs N               Worker count. Omit for auto; 0 for sequential.
@@ -55,9 +56,18 @@ Examples:
 gitoverit ~/projects
 gito ~/projects -d -s author
 gito ~/projects -f -o json
+gito ~/projects --metadata-only
 gito ~/projects -w 'branch != "main" and ahead > 0'
 gito ~/projects -w dirty -p path -0 | xargs -0 -n1 echo
 ```
+
+`--metadata-only` retains repository, branch, remote, ahead/behind, submodule,
+and identity metadata without inspecting worktree files. Status uses `?` to
+mark the unchecked worktree. Dirty state, modified/untracked/deleted counts,
+line-change totals, and worktree mtime are unavailable; JSON renders those
+fields as `null`. The mode defaults to directory sorting and omits the mtime
+column. It cannot be combined with `--dirty-only`, `--pull-safe`,
+`--sort mtime`, or `--where`/`--print` expressions that use unavailable fields.
 
 ## Branch Status
 

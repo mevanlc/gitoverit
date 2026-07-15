@@ -639,7 +639,7 @@ class AutoTable:
 NBSP = "\u00A0"
 
 
-def _status_key_main() -> Text:
+def _status_key_main(*, show_checked: bool, show_unchecked: bool) -> Text:
     text = Text("  ")
     first = True
 
@@ -655,24 +655,29 @@ def _status_key_main() -> Text:
         text.append(description)
         first = False
 
-    add("m", "modified", "yellow")
-    add("u", "untracked", "magenta")
-    add("d", "deleted", "red")
-    add("+/-", "added/removed", "cyan")
+    if show_checked:
+        add("m", "modified", "yellow")
+        add("u", "untracked", "magenta")
+        add("d", "deleted", "red")
+        add("+/-", "added/removed", "cyan")
+    if show_unchecked:
+        add("?", "worktree unchecked", "bright_black")
     add("↑", "ahead", "green")
     add("↓", "behind", "bright_black")
     add("s", "submodules", "blue")
-    add("p", "pulled", "cyan")
+    if show_checked:
+        add("p", "pulled", "cyan")
 
     return text
 
 
-def _status_key_exceptional() -> Text:
+def _status_key_exceptional(*, conflicts_checked: bool) -> Text:
     text = Text("  ")
     text.append("!", style="bold red")
     text.append(" ")
+    causes = "conflicts, detached HEAD, " if conflicts_checked else "detached HEAD, "
     text.append(
-        "any of: conflicts, detached HEAD, in-progress/unfinished operation "
+        f"any of: {causes}in-progress/unfinished operation "
         "(merge, rebase, cherry-pick, etc.)"
     )
     return text
@@ -789,6 +794,7 @@ def _branch_remote_header() -> ResponsiveCell:
 
 
 DEFAULT_COLUMNS = ["dir", "status", "branch", "remote", "url", "mtime"]
+METADATA_ONLY_DEFAULT_COLUMNS = ["dir", "status", "branch", "remote", "url"]
 
 # (header_factory, priority). header_factory returns a ResponsiveCell each
 # call so headers can't accidentally share mutable state.
@@ -824,7 +830,11 @@ def _row_value(col: str, report: RepoReport) -> ResponsiveCell:
     raise ValueError(f"Unknown column: {col!r}")
 
 
-def parse_columns(spec: str) -> list[str]:
+def parse_columns(
+    spec: str,
+    *,
+    defaults: Sequence[str] | None = None,
+) -> list[str]:
     """Parse a column spec string into an ordered list of column identifiers.
 
     Tokens are comma-separated and processed left-to-right:
@@ -834,7 +844,7 @@ def parse_columns(spec: str) -> list[str]:
 
     Last mention of a column wins.
     """
-    result = list(DEFAULT_COLUMNS)
+    result = list(DEFAULT_COLUMNS if defaults is None else defaults)
     for token in spec.split(","):
         token = token.strip()
         if not token:
@@ -868,6 +878,8 @@ def render_table(
     show_exceptional_key = any(
         any(seg[0] == "!" for seg in report.status_segments) for report in reports
     )
+    show_checked = any(report.worktree_status_checked for report in reports)
+    show_unchecked = any(not report.worktree_status_checked for report in reports)
 
     # Allow priority override via config (or env var, which wins in config.py).
     configured = load_config().column_priorities
@@ -892,15 +904,21 @@ def render_table(
     console.print(table)
 
     if reports and "status" in active_columns:
-        console.print(_status_key_main())
+        console.print(
+            _status_key_main(
+                show_checked=show_checked,
+                show_unchecked=show_unchecked,
+            )
+        )
         if show_exceptional_key:
-            console.print(_status_key_exceptional())
+            console.print(_status_key_exceptional(conflicts_checked=show_checked))
 
 
 __all__ = [
     "AutoColumn",
     "AutoTable",
     "DEFAULT_COLUMNS",
+    "METADATA_ONLY_DEFAULT_COLUMNS",
     "ResponsiveCell",
     "parse_columns",
     "render_table",

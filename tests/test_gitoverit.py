@@ -5,12 +5,17 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from git import Actor, Repo
+from git import Actor, Git, Repo
 from typer.testing import CliRunner
 
 from gitoverit.output import render_json
-from gitoverit.output.table import DEFAULT_COLUMNS, parse_columns
+from gitoverit.output.table import (
+    DEFAULT_COLUMNS,
+    METADATA_ONLY_DEFAULT_COLUMNS,
+    parse_columns,
+)
 from gitoverit.repos_cli import (
     APP,
     SortMode,
@@ -38,6 +43,7 @@ class ReposCliTests(unittest.TestCase):
         result = RUNNER.invoke(APP, ["--help"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Scan git repositories beneath the given directories", result.stdout)
+        self.assertIn("--metadata-only", result.stdout)
 
     def test_help_where_renders_expression_help(self) -> None:
         result = RUNNER.invoke(APP, ["--help-where"])
@@ -97,6 +103,103 @@ class LatestWorktreeMtimeTests(unittest.TestCase):
             self.assertIsNotNone(latest)
             assert latest is not None
             self.assertGreaterEqual(latest, future_time - 0.01)
+
+
+class MetadataOnlyTests(unittest.TestCase):
+    def test_analysis_skips_worktree_operations_and_marks_values_unknown(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo = Repo.init(tmpdir)
+            tracked = Path(tmpdir) / "tracked.txt"
+            tracked.write_text("tracked\n")
+            repo.index.add(["tracked.txt"])
+            repo.index.commit("initial", author=AUTHOR, committer=AUTHOR)
+
+            original_getattr = Git.__getattr__
+
+            def reject_status(git: Git, name: str):
+                if name == "status":
+                    raise AssertionError("git status must not run in metadata-only mode")
+                return original_getattr(git, name)
+
+            with (
+                patch.object(Git, "__getattr__", reject_status),
+                patch(
+                    "gitoverit.reporting.diff_numstat_totals",
+                    side_effect=AssertionError("diff must not run"),
+                ),
+                patch(
+                    "gitoverit.reporting.latest_worktree_mtime",
+                    side_effect=AssertionError("mtime scan must not run"),
+                ),
+            ):
+                report = analyze_repository(
+                    Path(tmpdir),
+                    fetch=False,
+                    metadata_only=True,
+                )
+
+            self.assertFalse(report.worktree_status_checked)
+            self.assertIsNone(report.dirty)
+            self.assertIsNone(report.modified)
+            self.assertIsNone(report.untracked)
+            self.assertIsNone(report.deleted)
+            self.assertIsNone(report.latest_mtime)
+            self.assertEqual(report.branch, repo.active_branch.name)
+            self.assertIn(("?", "bright_black", "core"), report.status_segments)
+
+            payload = json.loads(render_json([report]))[0]
+            self.assertFalse(payload["worktree_status_checked"])
+            self.assertEqual(payload["status"], "?")
+            self.assertIsNone(payload["dirty"])
+            self.assertIsNone(payload["modified"])
+            self.assertIsNone(payload["untracked"])
+            self.assertIsNone(payload["deleted"])
+            self.assertIsNone(payload["mtime"])
+
+    def test_cli_defaults_to_dir_sort_and_metadata_columns(self) -> None:
+        with (
+            patch("gitoverit.repos_cli.collect_reports_parallel", return_value=[]) as collect,
+            patch("gitoverit.repos_cli._sort_reports") as sort_reports,
+            patch("gitoverit.repos_cli.render_table") as render_table,
+        ):
+            result = RUNNER.invoke(APP, ["--metadata-only", "--no-progress"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(collect.call_args.kwargs["metadata_only"])
+        sort_reports.assert_called_once_with([], sort=SortMode.DIR, reverse=False)
+        self.assertEqual(
+            render_table.call_args.kwargs["columns"],
+            METADATA_ONLY_DEFAULT_COLUMNS,
+        )
+
+    def test_cli_keeps_mtime_as_normal_default_sort(self) -> None:
+        with (
+            patch("gitoverit.repos_cli.collect_reports_parallel", return_value=[]),
+            patch("gitoverit.repos_cli._sort_reports") as sort_reports,
+            patch("gitoverit.repos_cli.render_table"),
+        ):
+            result = RUNNER.invoke(APP, ["--no-progress"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        sort_reports.assert_called_once_with([], sort=SortMode.MTIME, reverse=False)
+
+    def test_cli_rejects_options_that_require_worktree_status(self) -> None:
+        cases = (
+            ["--dirty-only"],
+            ["--pull-safe"],
+            ["--sort", "mtime"],
+            ["--where", "dirty"],
+            ["--where", "modified > 0"],
+            ["--print", "mtime"],
+        )
+        for args in cases:
+            with self.subTest(args=args):
+                result = RUNNER.invoke(
+                    APP,
+                    ["--metadata-only", "--no-progress", *args],
+                )
+                self.assertEqual(result.exit_code, 2, result.output)
+                self.assertIn("cannot", result.output)
 
 
 class ExceptionalStateTests(unittest.TestCase):
@@ -161,6 +264,13 @@ class ParseColumnsTests(unittest.TestCase):
     def test_unknown_removal_raises(self) -> None:
         with self.assertRaises(ValueError):
             parse_columns("-bogus")
+
+    def test_custom_defaults_are_used_as_column_base(self) -> None:
+        result = parse_columns("ident", defaults=METADATA_ONLY_DEFAULT_COLUMNS)
+        self.assertEqual(
+            result,
+            ["dir", "status", "branch", "remote", "url", "ident"],
+        )
 
 
 class DiscoverRepositoriesTests(unittest.TestCase):

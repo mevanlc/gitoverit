@@ -38,12 +38,12 @@ def render_table(
     console.print(table)
 
     if reports and "status" in active_columns:
-        console.print(_status_key_main())
+        console.print(_status_key_main(show_checked=True, show_unchecked=False))
         show_exceptional = any(
             any(seg[0] == "!" for seg in report.status_segments) for report in reports
         )
         if show_exceptional:
-            console.print(_status_key_exceptional())
+            console.print(_status_key_exceptional(conflicts_checked=True))
 
 
 def parse_columns(spec: str) -> list[str]:

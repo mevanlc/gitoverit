@@ -54,6 +54,17 @@ class ReposCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Filter expressions for --where / -w", result.stdout)
 
+    def test_pull_safe_short_alias(self) -> None:
+        with (
+            patch("gitoverit.repos_cli.collect_reports_parallel", return_value=[]) as collect,
+            patch("gitoverit.repos_cli.render_table"),
+        ):
+            result = RUNNER.invoke(APP, ["-P", "--no-progress"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(collect.call_args.kwargs["fetch"])
+        self.assertTrue(collect.call_args.kwargs["pull_safe"])
+
 
 class ParseStatusTests(unittest.TestCase):
     def test_counts_modified_untracked_deleted(self) -> None:

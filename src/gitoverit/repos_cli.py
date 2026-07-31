@@ -164,6 +164,7 @@ def repos(
     ),
     pull_safe: bool = typer.Option(
         False,
+        "-P",
         "--pull-safe",
         help="Fetch and fast-forward only clean, non-diverged repositories that are behind upstream.",
     ),

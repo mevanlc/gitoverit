@@ -168,6 +168,11 @@ def repos(
         "--pull-safe",
         help="Fetch and fast-forward only clean, non-diverged repositories that are behind upstream.",
     ),
+    push_safe: bool = typer.Option(
+        False,
+        "--push-safe",
+        help="Fetch and push only clean, non-diverged repositories that are ahead of upstream.",
+    ),
     output_format: OutputFormat = typer.Option(
         OutputFormat.TABLE, "-o", "--format", case_sensitive=False, help="Choose output format."
     ),
@@ -255,6 +260,7 @@ def repos(
         metadata_only=metadata_only,
         dirty_only=dirty_only,
         pull_safe=pull_safe,
+        push_safe=push_safe,
         sort=sort,
         where=where,
         print_expr=print_expr,
@@ -270,10 +276,11 @@ def repos(
 
     reports = collect_reports_parallel(
         dirs,
-        fetch=fetch or pull_safe,
+        fetch=fetch or pull_safe or push_safe,
         dirty_only=dirty_only,
         include_ignored=include_ignored,
         pull_safe=pull_safe,
+        push_safe=push_safe,
         metadata_only=metadata_only,
         hook=hook,
         max_workers=parallel,  # None means auto-detect, 0 means sequential, N means N workers
@@ -340,6 +347,7 @@ def _validate_metadata_only_options(
     metadata_only: bool,
     dirty_only: bool,
     pull_safe: bool,
+    push_safe: bool,
     sort: SortMode | None,
     where: str | None,
     print_expr: str | None,
@@ -355,6 +363,11 @@ def _validate_metadata_only_options(
         raise typer.BadParameter(
             "cannot be used with --metadata-only because a clean worktree cannot be verified",
             param_hint="--pull-safe",
+        )
+    if push_safe:
+        raise typer.BadParameter(
+            "cannot be used with --metadata-only because a clean worktree cannot be verified",
+            param_hint="--push-safe",
         )
     if sort is SortMode.MTIME:
         raise typer.BadParameter(

@@ -38,6 +38,8 @@ class RepoReport:
     pull_failed: bool = False
     pulled: bool = False
     worktree_status_checked: bool = True
+    push_failed: bool = False
+    pushed: bool = False
 
     def status_text(self) -> Text:
         if not self.status_segments:
@@ -95,6 +97,7 @@ def collect_reports(
     dirty_only: bool,
     include_ignored: bool = False,
     pull_safe: bool = False,
+    push_safe: bool = False,
     metadata_only: bool = False,
     hook: HookProtocol | None = None,
 ) -> list[RepoReport]:
@@ -105,6 +108,7 @@ def collect_reports(
         dirty_only=dirty_only,
         include_ignored=include_ignored,
         pull_safe=pull_safe,
+        push_safe=push_safe,
         metadata_only=metadata_only,
         hook=hook,
         max_workers=0,
@@ -130,6 +134,7 @@ def collect_reports_parallel(
     dirty_only: bool,
     include_ignored: bool = False,
     pull_safe: bool = False,
+    push_safe: bool = False,
     metadata_only: bool = False,
     hook: HookProtocol | None = None,
     max_workers: int | None = None,
@@ -167,6 +172,7 @@ def collect_reports_parallel(
                         repo_path,
                         fetch=fetch,
                         pull_safe=pull_safe,
+                        push_safe=push_safe,
                         metadata_only=metadata_only,
                     )
                     if not (
@@ -174,6 +180,7 @@ def collect_reports_parallel(
                         and not report.dirty
                         and not report.fetch_failed
                         and not report.pull_failed
+                        and not report.push_failed
                     ):
                         reports.append(report)
                 except Exception as exc:
@@ -218,6 +225,7 @@ def collect_reports_parallel(
                         fetch,
                         pull_safe,
                         metadata_only,
+                        push_safe,
                     )
                     futures[future] = repo_path
 
@@ -240,6 +248,7 @@ def collect_reports_parallel(
                             and not report.dirty
                             and not report.fetch_failed
                             and not report.pull_failed
+                            and not report.push_failed
                         ):
                             reports.append(report)
                     except Exception as exc:
@@ -332,13 +341,16 @@ def analyze_repository(
     fetch: bool,
     pull_safe: bool = False,
     metadata_only: bool = False,
+    push_safe: bool = False,
 ) -> RepoReport:
     repo = Repo(path)
     fetch_failed = False
     pull_failed = False
     pulled = False
+    push_failed = False
+    pushed = False
 
-    if (fetch or pull_safe) and repo.remotes:
+    if (fetch or pull_safe or push_safe) and repo.remotes:
         if not _run_git_operation(path, "fetch", "--all", timeout=60):
             fetch_failed = True
 
@@ -351,10 +363,24 @@ def analyze_repository(
             pull_failed = True
         state = _collect_repo_state(repo, metadata_only=metadata_only)
 
-    segments = _render_repo_state_segments(state, pulled=pulled)
+    push_target = _upstream_push_target(repo) if push_safe else None
+    if (
+        push_safe
+        and push_target is not None
+        and _can_push_safely(state, fetch_failed=fetch_failed)
+    ):
+        remote_name, remote_branch = push_target
+        refspec = f"HEAD:refs/heads/{remote_branch}"
+        if _run_git_operation(path, "push", remote_name, refspec, timeout=120):
+            pushed = True
+        else:
+            push_failed = True
+        state = _collect_repo_state(repo, metadata_only=metadata_only)
+
+    segments = _render_repo_state_segments(state, pulled=pulled, pushed=pushed)
 
     display_path = relativize(path)
-    if fetch_failed or pull_failed:
+    if fetch_failed or pull_failed or push_failed:
         display_path = f"! {display_path}"
 
     return RepoReport(
@@ -363,6 +389,8 @@ def analyze_repository(
         fetch_failed=fetch_failed,
         pull_failed=pull_failed,
         pulled=pulled,
+        push_failed=push_failed,
+        pushed=pushed,
         status_segments=segments,
         branch=state.branch_name,
         remote=state.remote_ref or "-",
@@ -440,10 +468,40 @@ def _can_pull_safely(state: RepoState, *, fetch_failed: bool) -> bool:
     )
 
 
+def _can_push_safely(state: RepoState, *, fetch_failed: bool) -> bool:
+    return (
+        not fetch_failed
+        and state.worktree_status_checked
+        and state.ahead > 0
+        and state.behind == 0
+        and not state.dirty
+        and state.remote_ref is not None
+    )
+
+
+def _upstream_push_target(repo: Repo) -> tuple[str, str] | None:
+    if repo.head.is_detached:
+        return None
+    try:
+        tracking = repo.active_branch.tracking_branch()
+    except (TypeError, GitCommandError):
+        return None
+    if tracking is None:
+        return None
+    remote_name = tracking.remote_name
+    remote_branch = tracking.remote_head
+    if not remote_name or not remote_branch:
+        return None
+    if remote_name not in {remote.name for remote in repo.remotes}:
+        return None
+    return remote_name, remote_branch
+
+
 def _render_repo_state_segments(
     state: RepoState,
     *,
     pulled: bool,
+    pushed: bool = False,
 ) -> list[tuple[str, str | None, str]]:
     segments: list[tuple[str, str | None, str]] = []
     if not state.worktree_status_checked:
@@ -464,6 +522,8 @@ def _render_repo_state_segments(
         segments.append((f"{state.behind}\u2193", "bright_black", "core"))
     if pulled:
         segments.append(("p", "cyan", "extras"))
+    if pushed:
+        segments.append(("P", "green", "extras"))
     if state.exceptional:
         segments.append(("!", "bold red", "core"))
     return segments

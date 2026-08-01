@@ -34,6 +34,7 @@ Common options:
 ```text
 -f, --fetch                Run git fetch --all before inspection.
 -P, --pull-safe            Fetch first, then fast-forward only safe clean repos.
+    --push-safe            Fetch first, then push only safe clean repos.
 -o, --format {table,json}  Output format. Default: table.
 -d, --dirty-only           Hide repos without uncommitted changes.
     --metadata-only        Skip worktree file inspection for a faster metadata crawl.
@@ -61,13 +62,22 @@ gito ~/projects -w 'branch != "main" and ahead > 0'
 gito ~/projects -w dirty -p path -0 | xargs -0 -n1 echo
 ```
 
+`--pull-safe` and `--push-safe` can be combined. Both fetch before taking
+action and require a clean worktree. Pulling is limited to branches that are
+behind without being ahead; pushing is limited to branches that are ahead
+without being behind. Safe pushes update only the current branch's configured
+upstream branch and never force. Output filters such as `--where` and
+`--dirty-only` are applied after safe actions, as they are during ordinary
+reporting.
+
 `--metadata-only` retains repository, branch, remote, ahead/behind, submodule,
 and identity metadata without inspecting worktree files. Status uses `?` to
 mark the unchecked worktree. Dirty state, modified/untracked/deleted counts,
 line-change totals, and worktree mtime are unavailable; JSON renders those
 fields as `null`. The mode defaults to directory sorting and omits the mtime
 column. It cannot be combined with `--dirty-only`, `--pull-safe`,
-`--sort mtime`, or `--where`/`--print` expressions that use unavailable fields.
+`--push-safe`, `--sort mtime`, or `--where`/`--print` expressions that use
+unavailable fields.
 
 ## Branch Status
 

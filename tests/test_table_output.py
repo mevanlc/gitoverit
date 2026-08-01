@@ -53,6 +53,7 @@ class TableKeyOutputTests(unittest.TestCase):
         self.assertIn("↓\u00A0behind", output)
         self.assertIn("s\u00A0submodules", output)
         self.assertIn("p\u00A0pulled", output)
+        self.assertIn("P\u00A0pushed", output)
 
     def test_exceptional_key_only_when_bang_present(self) -> None:
         console_no_bang = Console(record=True, width=80)

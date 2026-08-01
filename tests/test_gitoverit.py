@@ -27,6 +27,7 @@ from gitoverit.reporting import (
     ParsedStatus,
     RepoReport,
     analyze_repository,
+    collect_reports,
     discover_repositories,
     has_exceptional_state,
     latest_worktree_mtime,
@@ -44,6 +45,7 @@ class ReposCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Scan git repositories beneath the given directories", result.stdout)
         self.assertIn("--metadata-only", result.stdout)
+        self.assertIn("--push-safe", result.stdout)
         self.assertIn("FIELD", result.stdout)
         self.assertIn("Valid fields:", result.stdout)
         for sort_mode in SortMode:
@@ -64,6 +66,32 @@ class ReposCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(collect.call_args.kwargs["fetch"])
         self.assertTrue(collect.call_args.kwargs["pull_safe"])
+
+    def test_push_safe_enables_fetch_and_push(self) -> None:
+        with (
+            patch("gitoverit.repos_cli.collect_reports_parallel", return_value=[]) as collect,
+            patch("gitoverit.repos_cli.render_table"),
+        ):
+            result = RUNNER.invoke(APP, ["--push-safe", "--no-progress"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(collect.call_args.kwargs["fetch"])
+        self.assertTrue(collect.call_args.kwargs["push_safe"])
+
+    def test_pull_safe_and_push_safe_can_be_combined(self) -> None:
+        with (
+            patch("gitoverit.repos_cli.collect_reports_parallel", return_value=[]) as collect,
+            patch("gitoverit.repos_cli.render_table"),
+        ):
+            result = RUNNER.invoke(
+                APP,
+                ["--pull-safe", "--push-safe", "--no-progress"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(collect.call_args.kwargs["fetch"])
+        self.assertTrue(collect.call_args.kwargs["pull_safe"])
+        self.assertTrue(collect.call_args.kwargs["push_safe"])
 
 
 class ParseStatusTests(unittest.TestCase):
@@ -202,6 +230,7 @@ class MetadataOnlyTests(unittest.TestCase):
         cases = (
             ["--dirty-only"],
             ["--pull-safe"],
+            ["--push-safe"],
             ["--sort", "mtime"],
             ["--where", "dirty"],
             ["--where", "modified > 0"],
@@ -656,6 +685,204 @@ class PullSafeTests(unittest.TestCase):
             self.assertEqual(report.ahead, 1)
             self.assertEqual(report.behind, 1)
             self.assertEqual(local.head.commit.hexsha, before)
+
+
+class PushSafeTests(unittest.TestCase):
+    def _commit_file(self, repo: Repo, relative_path: str, content: str, message: str) -> None:
+        worktree = Path(repo.working_tree_dir or "")
+        path = worktree / relative_path
+        path.write_text(content)
+        repo.index.add([relative_path])
+        repo.index.commit(message, author=AUTHOR, committer=AUTHOR)
+
+    def _clone_remote_triplet(self, tmpdir: str) -> tuple[Repo, Repo, Repo]:
+        remote_path = Path(tmpdir) / "remote.git"
+        remote = Repo.init(remote_path, bare=True)
+
+        seed = Repo.clone_from(str(remote_path), Path(tmpdir) / "seed")
+        self._commit_file(seed, "README.md", "seed\n", "seed")
+        seed.git.push("--set-upstream", "origin", seed.active_branch.name)
+
+        local = Repo.clone_from(str(remote_path), Path(tmpdir) / "local")
+        other = Repo.clone_from(str(remote_path), Path(tmpdir) / "other")
+        return remote, local, other
+
+    def test_push_safe_pushes_clean_ahead_repo_to_exact_upstream(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            remote, local, _ = self._clone_remote_triplet(tmpdir)
+            upstream_branch = local.active_branch.tracking_branch()
+            self.assertIsNotNone(upstream_branch)
+            assert upstream_branch is not None
+            remote_branch = upstream_branch.remote_head
+
+            local.git.branch("-m", "local-only")
+            self._commit_file(local, "local.txt", "local change\n", "local change")
+
+            report = analyze_repository(
+                Path(local.working_tree_dir or ""),
+                fetch=False,
+                pull_safe=True,
+                push_safe=True,
+            )
+
+            self.assertFalse(report.pulled)
+            self.assertTrue(report.pushed)
+            self.assertFalse(report.push_failed)
+            self.assertEqual(report.ahead, 0)
+            self.assertEqual(report.behind, 0)
+            self.assertFalse(report.dirty)
+            self.assertIn(("P", "green", "extras"), report.status_segments)
+            self.assertEqual(
+                remote.commit(f"refs/heads/{remote_branch}").hexsha,
+                local.head.commit.hexsha,
+            )
+
+            payload = json.loads(render_json([report]))[0]
+            self.assertTrue(payload["pushed"])
+            self.assertFalse(payload["push_failed"])
+
+    def test_push_safe_skips_dirty_repo(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            remote, local, _ = self._clone_remote_triplet(tmpdir)
+            branch = local.active_branch.name
+            remote_before = remote.commit(f"refs/heads/{branch}").hexsha
+            self._commit_file(local, "local.txt", "committed\n", "local change")
+            Path(local.working_tree_dir or "", "dirty.txt").write_text("dirty\n")
+
+            report = analyze_repository(
+                Path(local.working_tree_dir or ""),
+                fetch=False,
+                push_safe=True,
+            )
+
+            self.assertFalse(report.pushed)
+            self.assertFalse(report.push_failed)
+            self.assertEqual(report.ahead, 1)
+            self.assertTrue(report.dirty)
+            self.assertEqual(remote.commit(f"refs/heads/{branch}").hexsha, remote_before)
+
+    def test_push_safe_skips_diverged_repo(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            remote, local, other = self._clone_remote_triplet(tmpdir)
+            branch = local.active_branch.name
+            self._commit_file(local, "local.txt", "local\n", "local change")
+            self._commit_file(other, "remote.txt", "remote\n", "remote change")
+            other.git.push("origin", other.active_branch.name)
+            remote_before = remote.commit(f"refs/heads/{branch}").hexsha
+
+            report = analyze_repository(
+                Path(local.working_tree_dir or ""),
+                fetch=False,
+                push_safe=True,
+            )
+
+            self.assertFalse(report.pushed)
+            self.assertFalse(report.push_failed)
+            self.assertEqual(report.ahead, 1)
+            self.assertEqual(report.behind, 1)
+            self.assertEqual(remote.commit(f"refs/heads/{branch}").hexsha, remote_before)
+
+    def test_push_safe_skips_behind_only_repo(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            _, local, other = self._clone_remote_triplet(tmpdir)
+            self._commit_file(other, "remote.txt", "remote\n", "remote change")
+            other.git.push("origin", other.active_branch.name)
+
+            report = analyze_repository(
+                Path(local.working_tree_dir or ""),
+                fetch=False,
+                push_safe=True,
+            )
+
+            self.assertFalse(report.pushed)
+            self.assertFalse(report.push_failed)
+            self.assertEqual(report.ahead, 0)
+            self.assertEqual(report.behind, 1)
+
+    def test_combined_safe_modes_pull_behind_only_repo_without_push(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            _, local, other = self._clone_remote_triplet(tmpdir)
+            self._commit_file(other, "remote.txt", "remote\n", "remote change")
+            other.git.push("origin", other.active_branch.name)
+
+            report = analyze_repository(
+                Path(local.working_tree_dir or ""),
+                fetch=False,
+                pull_safe=True,
+                push_safe=True,
+            )
+
+            self.assertTrue(report.pulled)
+            self.assertFalse(report.pushed)
+            self.assertFalse(report.push_failed)
+            self.assertEqual(report.ahead, 0)
+            self.assertEqual(report.behind, 0)
+
+    def test_push_safe_skips_detached_repo(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            remote, local, _ = self._clone_remote_triplet(tmpdir)
+            branch = local.active_branch.name
+            remote_before = remote.commit(f"refs/heads/{branch}").hexsha
+            local.git.checkout("--detach")
+            self._commit_file(local, "local.txt", "local\n", "detached change")
+
+            report = analyze_repository(
+                Path(local.working_tree_dir or ""),
+                fetch=False,
+                push_safe=True,
+            )
+
+            self.assertFalse(report.pushed)
+            self.assertFalse(report.push_failed)
+            self.assertEqual(remote.commit(f"refs/heads/{branch}").hexsha, remote_before)
+
+    def test_push_safe_skips_repo_without_upstream(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo = Repo.init(tmpdir)
+            self._commit_file(repo, "local.txt", "local\n", "local change")
+
+            report = analyze_repository(
+                Path(tmpdir),
+                fetch=False,
+                push_safe=True,
+            )
+
+            self.assertFalse(report.pushed)
+            self.assertFalse(report.push_failed)
+            self.assertEqual(report.remote, "-")
+
+    def test_push_safe_failure_is_reported_and_retained_by_dirty_only(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            _, local, _ = self._clone_remote_triplet(tmpdir)
+            missing_push_remote = Path(tmpdir) / "missing.git"
+            local.git.remote(
+                "set-url",
+                "--push",
+                "origin",
+                str(missing_push_remote),
+            )
+            self._commit_file(local, "local.txt", "local\n", "local change")
+
+            reports = collect_reports(
+                [Path(local.working_tree_dir or "")],
+                fetch=False,
+                dirty_only=True,
+                push_safe=True,
+            )
+
+            self.assertEqual(len(reports), 1)
+            report = reports[0]
+            self.assertFalse(report.pushed)
+            self.assertTrue(report.push_failed)
+            self.assertEqual(report.ahead, 1)
+            self.assertFalse(report.dirty)
+            self.assertTrue(report.display_path.startswith("! "))
+            self.assertNotIn(("P", "green", "extras"), report.status_segments)
+
+            payload = json.loads(render_json([report]))[0]
+            self.assertFalse(payload["pushed"])
+            self.assertTrue(payload["push_failed"])
+
 
 class PrintReportsTests(unittest.TestCase):
     def _make_report(self, **kwargs: object) -> RepoReport:

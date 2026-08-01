@@ -14,6 +14,8 @@ def render_json(reports: Sequence[RepoReport]) -> str:
             "fetch_failed": report.fetch_failed,
             "pull_failed": report.pull_failed,
             "pulled": report.pulled,
+            "push_failed": report.push_failed,
+            "pushed": report.pushed,
             "status": render_status_segments(report.status_segments),
             "worktree_status_checked": report.worktree_status_checked,
             "branch": report.branch,

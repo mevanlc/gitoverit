@@ -67,12 +67,12 @@ class ReposCliTests(unittest.TestCase):
         self.assertTrue(collect.call_args.kwargs["fetch"])
         self.assertTrue(collect.call_args.kwargs["pull_safe"])
 
-    def test_push_safe_enables_fetch_and_push(self) -> None:
+    def test_push_safe_short_alias_enables_fetch_and_push(self) -> None:
         with (
             patch("gitoverit.repos_cli.collect_reports_parallel", return_value=[]) as collect,
             patch("gitoverit.repos_cli.render_table"),
         ):
-            result = RUNNER.invoke(APP, ["--push-safe", "--no-progress"])
+            result = RUNNER.invoke(APP, ["-U", "--no-progress"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(collect.call_args.kwargs["fetch"])

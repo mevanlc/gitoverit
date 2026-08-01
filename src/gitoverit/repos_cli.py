@@ -170,6 +170,7 @@ def repos(
     ),
     push_safe: bool = typer.Option(
         False,
+        "-U",
         "--push-safe",
         help="Fetch and push only clean, non-diverged repositories that are ahead of upstream.",
     ),

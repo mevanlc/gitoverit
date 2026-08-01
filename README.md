@@ -34,7 +34,7 @@ Common options:
 ```text
 -f, --fetch                Run git fetch --all before inspection.
 -P, --pull-safe            Fetch first, then fast-forward only safe clean repos.
-    --push-safe            Fetch first, then push only safe clean repos.
+-U, --push-safe            Fetch first, then push only safe clean repos.
 -o, --format {table,json}  Output format. Default: table.
 -d, --dirty-only           Hide repos without uncommitted changes.
     --metadata-only        Skip worktree file inspection for a faster metadata crawl.

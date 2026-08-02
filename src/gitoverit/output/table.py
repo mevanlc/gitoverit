@@ -666,8 +666,8 @@ def _status_key_main(*, show_checked: bool, show_unchecked: bool) -> Text:
     add("↓", "behind", "bright_black")
     add("s", "submodules", "blue")
     if show_checked:
-        add("p", "pulled", "cyan")
-        add("P", "pushed", "green")
+        add("P", "pulled", "cyan")
+        add("U", "pushed", "green")
 
     return text
 

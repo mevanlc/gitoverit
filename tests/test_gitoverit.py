@@ -645,7 +645,7 @@ class PullSafeTests(unittest.TestCase):
             self.assertFalse(report.pull_failed)
             self.assertEqual(report.behind, 0)
             self.assertFalse(report.dirty)
-            self.assertIn(("p", "cyan", "extras"), report.status_segments)
+            self.assertIn(("P", "cyan", "extras"), report.status_segments)
 
             payload = json.loads(render_json([report]))[0]
             self.assertTrue(payload["pulled"])
@@ -731,7 +731,7 @@ class PushSafeTests(unittest.TestCase):
             self.assertEqual(report.ahead, 0)
             self.assertEqual(report.behind, 0)
             self.assertFalse(report.dirty)
-            self.assertIn(("P", "green", "extras"), report.status_segments)
+            self.assertIn(("U", "green", "extras"), report.status_segments)
             self.assertEqual(
                 remote.commit(f"refs/heads/{remote_branch}").hexsha,
                 local.head.commit.hexsha,
@@ -877,7 +877,7 @@ class PushSafeTests(unittest.TestCase):
             self.assertEqual(report.ahead, 1)
             self.assertFalse(report.dirty)
             self.assertTrue(report.display_path.startswith("! "))
-            self.assertNotIn(("P", "green", "extras"), report.status_segments)
+            self.assertNotIn(("U", "green", "extras"), report.status_segments)
 
             payload = json.loads(render_json([report]))[0]
             self.assertFalse(payload["pushed"])

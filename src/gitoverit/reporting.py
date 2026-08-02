@@ -521,9 +521,9 @@ def _render_repo_state_segments(
     if state.behind:
         segments.append((f"{state.behind}\u2193", "bright_black", "core"))
     if pulled:
-        segments.append(("p", "cyan", "extras"))
+        segments.append(("P", "cyan", "extras"))
     if pushed:
-        segments.append(("P", "green", "extras"))
+        segments.append(("U", "green", "extras"))
     if state.exceptional:
         segments.append(("!", "bold red", "core"))
     return segments

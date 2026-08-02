@@ -32,6 +32,7 @@ from gitoverit.reporting import (
     has_exceptional_state,
     latest_worktree_mtime,
     parse_status_porcelain,
+    parse_status_porcelain_v2,
     simplify_url,
 )
 
@@ -93,6 +94,32 @@ class ReposCliTests(unittest.TestCase):
         self.assertTrue(collect.call_args.kwargs["pull_safe"])
         self.assertTrue(collect.call_args.kwargs["push_safe"])
 
+    def test_cli_skips_mtime_when_output_and_sort_do_not_need_it(self) -> None:
+        with (
+            patch("gitoverit.repos_cli.collect_reports_parallel", return_value=[]) as collect,
+            patch("gitoverit.repos_cli.render_table"),
+        ):
+            result = RUNNER.invoke(
+                APP,
+                ["--sort", "dir", "--columns=-mtime", "--no-progress"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertFalse(collect.call_args.kwargs["collect_mtime"])
+
+    def test_cli_keeps_mtime_for_json_output(self) -> None:
+        with patch(
+            "gitoverit.repos_cli.collect_reports_parallel",
+            return_value=[],
+        ) as collect:
+            result = RUNNER.invoke(
+                APP,
+                ["--sort", "dir", "--format", "json", "--no-progress"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(collect.call_args.kwargs["collect_mtime"])
+
 
 class ParseStatusTests(unittest.TestCase):
     def test_counts_modified_untracked_deleted(self) -> None:
@@ -107,6 +134,32 @@ class ParseStatusTests(unittest.TestCase):
         status = "UU conflicted.txt\n"""
         parsed = parse_status_porcelain(status)
         self.assertTrue(parsed.has_conflicts)
+
+    def test_parses_porcelain_v2_status_and_branch_headers(self) -> None:
+        status = (
+            "# branch.oid 0123456789abcdef\0"
+            "# branch.head feature\0"
+            "# branch.upstream origin/main\0"
+            "# branch.ab +2 -3\0"
+            "1 .M N... 100644 100644 100644 aaaaaaa aaaaaaa tracked.txt\0"
+            "1 .D N... 100644 100644 000000 aaaaaaa aaaaaaa deleted.txt\0"
+            "2 R. N... 100644 100644 100644 aaaaaaa aaaaaaa R100 renamed.txt\0"
+            "? old-name-that-must-be-skipped\0"
+            "? untracked/\0"
+            "u UU N... 100644 100644 100644 100644 a a a conflict.txt\0"
+        )
+
+        snapshot = parse_status_porcelain_v2(status)
+
+        self.assertEqual(snapshot.branch_oid, "0123456789abcdef")
+        self.assertEqual(snapshot.branch_head, "feature")
+        self.assertEqual(snapshot.upstream, "origin/main")
+        self.assertEqual((snapshot.ahead, snapshot.behind), (2, 3))
+        self.assertEqual(snapshot.parsed.modified_count, 2)
+        self.assertEqual(snapshot.parsed.deleted_count, 1)
+        self.assertEqual(snapshot.parsed.untracked_count, 1)
+        self.assertTrue(snapshot.parsed.has_conflicts)
+        self.assertTrue(snapshot.parsed.has_tracked_changes)
 
 
 class SimplifyUrlTests(unittest.TestCase):
@@ -146,6 +199,105 @@ class LatestWorktreeMtimeTests(unittest.TestCase):
             self.assertIsNotNone(latest)
             assert latest is not None
             self.assertGreaterEqual(latest, future_time - 0.01)
+
+    def test_ignored_files_and_parent_directories_do_not_affect_mtime(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo = Repo.init(tmpdir)
+            worktree = Path(tmpdir)
+            tracked = worktree / "tracked.txt"
+            gitignore = worktree / ".gitignore"
+            tracked.write_text("tracked")
+            gitignore.write_text("ignored/\n")
+            repo.index.add(["tracked.txt", ".gitignore"])
+            repo.index.commit("initial", author=AUTHOR, committer=AUTHOR)
+
+            past_time = time.time() - 10_000
+            os.utime(tracked, (past_time, past_time))
+            os.utime(gitignore, (past_time, past_time))
+            ignored = worktree / "ignored"
+            ignored.mkdir()
+            ignored_file = ignored / "generated.txt"
+            ignored_file.write_text("generated")
+            future_time = time.time() + 10_000
+            os.utime(ignored_file, (future_time, future_time))
+
+            latest = latest_worktree_mtime(repo)
+
+            self.assertIsNotNone(latest)
+            assert latest is not None
+            self.assertLess(latest, future_time - 1)
+
+
+class AnalysisOptimizationTests(unittest.TestCase):
+    def _clean_repo(self, tmpdir: str) -> Repo:
+        repo = Repo.init(tmpdir)
+        tracked = Path(tmpdir) / "tracked.txt"
+        tracked.write_text("tracked\n")
+        repo.index.add(["tracked.txt"])
+        repo.index.commit("initial", author=AUTHOR, committer=AUTHOR)
+        return repo
+
+    def test_clean_repo_skips_diff_numstat(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            self._clean_repo(tmpdir)
+            with patch(
+                "gitoverit.reporting.diff_numstat_totals",
+                side_effect=AssertionError("clean repository must not run git diff"),
+            ):
+                report = analyze_repository(
+                    Path(tmpdir),
+                    fetch=False,
+                    collect_mtime=False,
+                )
+
+            self.assertFalse(report.dirty)
+
+    def test_untracked_only_repo_skips_diff_numstat(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            self._clean_repo(tmpdir)
+            Path(tmpdir, "untracked.txt").write_text("untracked\n")
+            with patch(
+                "gitoverit.reporting.diff_numstat_totals",
+                side_effect=AssertionError("untracked-only repository must not run git diff"),
+            ):
+                report = analyze_repository(
+                    Path(tmpdir),
+                    fetch=False,
+                    collect_mtime=False,
+                )
+
+            self.assertTrue(report.dirty)
+            self.assertEqual(report.untracked, 1)
+
+    def test_status_explicitly_includes_untracked_files(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo = self._clean_repo(tmpdir)
+            repo.git.config("status.showUntrackedFiles", "no")
+            Path(tmpdir, "untracked.txt").write_text("untracked\n")
+
+            report = analyze_repository(
+                Path(tmpdir),
+                fetch=False,
+                collect_mtime=False,
+            )
+
+            self.assertTrue(report.dirty)
+            self.assertEqual(report.untracked, 1)
+
+    def test_collect_mtime_false_skips_worktree_mtime_scan(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            self._clean_repo(tmpdir)
+            with patch(
+                "gitoverit.reporting.latest_worktree_mtime",
+                side_effect=AssertionError("mtime scan must not run"),
+            ):
+                report = analyze_repository(
+                    Path(tmpdir),
+                    fetch=False,
+                    collect_mtime=False,
+                )
+
+            self.assertIsNone(report.latest_mtime)
 
 
 class MetadataOnlyTests(unittest.TestCase):
@@ -318,6 +470,30 @@ class ParseColumnsTests(unittest.TestCase):
 
 
 class DiscoverRepositoriesTests(unittest.TestCase):
+    def test_discovery_prunes_ignored_directories_before_descent(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir) / "parent"
+            parent.mkdir()
+            Repo.init(parent)
+            observed_dirnames: list[str] = []
+
+            def fake_walk(root: Path):
+                dirnames = ["ignored", "kept", ".git"]
+                yield str(root), dirnames, []
+                observed_dirnames.extend(dirnames)
+
+            with (
+                patch("gitoverit.reporting.os.walk", side_effect=fake_walk),
+                patch(
+                    "gitoverit.reporting._gitignored_directories",
+                    return_value={parent.resolve() / "ignored"},
+                ),
+            ):
+                discovered = list(discover_repositories([parent]))
+
+            self.assertEqual(discovered, [parent.resolve()])
+            self.assertEqual(observed_dirnames, ["kept"])
+
     def test_gitignored_nested_repo_is_skipped(self) -> None:
         with TemporaryDirectory() as tmpdir:
             parent = Path(tmpdir) / "parent"

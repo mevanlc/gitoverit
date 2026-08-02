@@ -14,7 +14,7 @@ from rich.console import Console
 from simpleeval import DEFAULT_NAMES, SimpleEval
 
 from .output import parse_columns, render_json, render_table
-from .output.table import METADATA_ONLY_DEFAULT_COLUMNS
+from .output.table import DEFAULT_COLUMNS, METADATA_ONLY_DEFAULT_COLUMNS
 from .progress import RichHook, SilentHook
 from .reporting import RepoReport, collect_reports_parallel, render_status_segments
 
@@ -268,6 +268,27 @@ def repos(
     )
     effective_sort = sort or (SortMode.DIR if metadata_only else SortMode.MTIME)
 
+    columns: list[str] | None = None
+    if output_format is OutputFormat.TABLE and print_expr is None:
+        if metadata_only:
+            columns = (
+                parse_columns(columns_spec, defaults=METADATA_ONLY_DEFAULT_COLUMNS)
+                if columns_spec
+                else METADATA_ONLY_DEFAULT_COLUMNS
+            )
+        else:
+            columns = parse_columns(columns_spec) if columns_spec else None
+    expression_names = _expression_names(where or "") | _expression_names(
+        print_expr or ""
+    )
+    active_columns = DEFAULT_COLUMNS if columns is None else columns
+    collect_mtime = not metadata_only and (
+        effective_sort is SortMode.MTIME
+        or bool(expression_names & {"mtime", "latest_mtime"})
+        or (print_expr is None and output_format is OutputFormat.JSON)
+        or (print_expr is None and "mtime" in active_columns)
+    )
+
     if _stdout_is_tty() and not no_progress:
         hook = RichHook(console)
     elif show_errors:
@@ -283,6 +304,7 @@ def repos(
         pull_safe=pull_safe,
         push_safe=push_safe,
         metadata_only=metadata_only,
+        collect_mtime=collect_mtime,
         hook=hook,
         max_workers=parallel,  # None means auto-detect, 0 means sequential, N means N workers
     )
@@ -297,14 +319,6 @@ def repos(
     elif output_format is OutputFormat.JSON:
         typer.echo(render_json(reports))
     else:
-        if metadata_only:
-            columns = (
-                parse_columns(columns_spec, defaults=METADATA_ONLY_DEFAULT_COLUMNS)
-                if columns_spec
-                else METADATA_ONLY_DEFAULT_COLUMNS
-            )
-        else:
-            columns = parse_columns(columns_spec) if columns_spec else None
         minimize_chars = table_algo is TableAlgo.CHAR
         render_table(console, reports, minimize_chars=minimize_chars, columns=columns)
 

@@ -59,6 +59,17 @@ class ParsedStatus:
     untracked_count: int
     deleted_count: int
     has_conflicts: bool
+    has_tracked_changes: bool = False
+
+
+@dataclass
+class StatusSnapshot:
+    parsed: ParsedStatus
+    branch_oid: str | None
+    branch_head: str | None
+    upstream: str | None
+    ahead: int
+    behind: int
 
 
 @dataclass
@@ -99,6 +110,7 @@ def collect_reports(
     pull_safe: bool = False,
     push_safe: bool = False,
     metadata_only: bool = False,
+    collect_mtime: bool = True,
     hook: HookProtocol | None = None,
 ) -> list[RepoReport]:
     # Backwards-compatible wrapper for sequential runs.
@@ -110,6 +122,7 @@ def collect_reports(
         pull_safe=pull_safe,
         push_safe=push_safe,
         metadata_only=metadata_only,
+        collect_mtime=collect_mtime,
         hook=hook,
         max_workers=0,
     )
@@ -136,6 +149,7 @@ def collect_reports_parallel(
     pull_safe: bool = False,
     push_safe: bool = False,
     metadata_only: bool = False,
+    collect_mtime: bool = True,
     hook: HookProtocol | None = None,
     max_workers: int | None = None,
 ) -> list[RepoReport]:
@@ -174,6 +188,7 @@ def collect_reports_parallel(
                         pull_safe=pull_safe,
                         push_safe=push_safe,
                         metadata_only=metadata_only,
+                        collect_mtime=collect_mtime,
                     )
                     if not (
                         dirty_only
@@ -226,6 +241,7 @@ def collect_reports_parallel(
                         pull_safe,
                         metadata_only,
                         push_safe,
+                        collect_mtime,
                     )
                     futures[future] = repo_path
 
@@ -271,6 +287,7 @@ def discover_repositories(
 ) -> Iterator[Path]:
     seen: set[Path] = set()
     known_repos: list[Path] = []
+    ignored_directories: set[Path] = set()
     normalized_roots = [root.resolve() for root in roots]
     for root in normalized_roots:
         if not root.is_dir():
@@ -293,8 +310,42 @@ def discover_repositories(
                     seen.add(resolved)
                     known_repos.append(resolved)
                     yield resolved
+                    if not include_ignored:
+                        ignored_directories.update(_gitignored_directories(resolved))
             if ".git" in dirnames:
                 dirnames.remove(".git")
+            if ignored_directories:
+                dirnames[:] = [
+                    name
+                    for name in dirnames
+                    if current / name not in ignored_directories
+                ]
+
+
+def _gitignored_directories(repo_path: Path) -> set[Path]:
+    """Return ignored directory roots that discovery may safely prune."""
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_path),
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "--no-empty-directory",
+            "-z",
+        ],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return set()
+    return {
+        repo_path / os.fsdecode(raw_path).removesuffix("/")
+        for raw_path in result.stdout.split(b"\0")
+        if raw_path
+    }
 
 
 def is_submodule_gitdir(git_dir: Path) -> bool:
@@ -342,6 +393,7 @@ def analyze_repository(
     pull_safe: bool = False,
     metadata_only: bool = False,
     push_safe: bool = False,
+    collect_mtime: bool = True,
 ) -> RepoReport:
     repo = Repo(path)
     fetch_failed = False
@@ -354,14 +406,22 @@ def analyze_repository(
         if not _run_git_operation(path, "fetch", "--all", timeout=60):
             fetch_failed = True
 
-    state = _collect_repo_state(repo, metadata_only=metadata_only)
+    state = _collect_repo_state(
+        repo,
+        metadata_only=metadata_only,
+        collect_mtime=collect_mtime,
+    )
 
     if pull_safe and _can_pull_safely(state, fetch_failed=fetch_failed):
         if _run_git_operation(path, "pull", "--ff-only", timeout=120):
             pulled = True
         else:
             pull_failed = True
-        state = _collect_repo_state(repo, metadata_only=metadata_only)
+        state = _collect_repo_state(
+            repo,
+            metadata_only=metadata_only,
+            collect_mtime=collect_mtime,
+        )
 
     push_target = _upstream_push_target(repo) if push_safe else None
     if (
@@ -375,7 +435,11 @@ def analyze_repository(
             pushed = True
         else:
             push_failed = True
-        state = _collect_repo_state(repo, metadata_only=metadata_only)
+        state = _collect_repo_state(
+            repo,
+            metadata_only=metadata_only,
+            collect_mtime=collect_mtime,
+        )
 
     segments = _render_repo_state_segments(state, pulled=pulled, pushed=pushed)
 
@@ -420,17 +484,30 @@ def _run_git_operation(path: Path, *args: str, timeout: int) -> bool:
     return result.returncode == 0
 
 
-def _collect_repo_state(repo: Repo, *, metadata_only: bool = False) -> RepoState:
+def _collect_repo_state(
+    repo: Repo,
+    *,
+    metadata_only: bool = False,
+    collect_mtime: bool = True,
+) -> RepoState:
     if metadata_only:
         parsed = ParsedStatus(0, 0, 0, False)
         additions = deletions = 0
         latest_mtime = None
+        ahead, behind, remote_ref, remote_url = compute_branch_tracking(repo)
+        branch_name = determine_branch(repo)
     else:
-        status = repo.git.status("--porcelain")
-        parsed = parse_status_porcelain(status)
-        additions, deletions = diff_numstat_totals(repo)
-        latest_mtime = latest_worktree_mtime(repo)
-    ahead, behind, remote_ref, remote_url = compute_branch_tracking(repo)
+        snapshot = collect_status_snapshot(repo)
+        parsed = snapshot.parsed
+        if parsed.has_tracked_changes:
+            additions, deletions = diff_numstat_totals(repo)
+        else:
+            additions = deletions = 0
+        latest_mtime = latest_worktree_mtime(repo) if collect_mtime else None
+        ahead = snapshot.ahead
+        behind = snapshot.behind
+        remote_ref, remote_url = tracking_display(repo, snapshot.upstream)
+        branch_name = snapshot_branch_name(snapshot)
     exceptional = has_exceptional_state(repo, parsed)
     return RepoState(
         parsed=parsed,
@@ -440,7 +517,7 @@ def _collect_repo_state(repo: Repo, *, metadata_only: bool = False) -> RepoState
         behind=behind,
         remote_ref=remote_ref,
         remote_url=remote_url,
-        branch_name=determine_branch(repo),
+        branch_name=branch_name,
         exceptional=exceptional,
         submodule_count=count_submodules(repo),
         ident=read_git_ident(repo),
@@ -534,6 +611,7 @@ def parse_status_porcelain(output: str) -> ParsedStatus:
     deleted_paths: set[str] = set()
     untracked = 0
     has_conflicts = False
+    has_tracked_changes = False
     for raw_line in output.splitlines():
         if not raw_line:
             continue
@@ -541,18 +619,100 @@ def parse_status_porcelain(output: str) -> ParsedStatus:
         if code == "??":
             untracked += 1
             continue
+        has_tracked_changes = True
         index_status, worktree_status = code
         if index_status == "U" or worktree_status == "U" or code in {"AA", "DD"}:
             has_conflicts = True
         if index_status == "D" or worktree_status == "D":
             deleted_paths.add(raw_line[3:])
-        if any(status in {"M", "A", "R", "C"} for status in (index_status, worktree_status)):
+        if any(
+            status in {"M", "A", "R", "C", "T"}
+            for status in (index_status, worktree_status)
+        ):
             modified_paths.add(raw_line[3:])
     return ParsedStatus(
         modified_count=len(modified_paths),
         untracked_count=untracked,
         deleted_count=len(deleted_paths),
         has_conflicts=has_conflicts,
+        has_tracked_changes=has_tracked_changes,
+    )
+
+
+def collect_status_snapshot(repo: Repo) -> StatusSnapshot:
+    output = repo.git.status(
+        "--porcelain=v2",
+        "--branch",
+        "-z",
+        "--untracked-files=normal",
+    )
+    return parse_status_porcelain_v2(output)
+
+
+def parse_status_porcelain_v2(output: str) -> StatusSnapshot:
+    modified = 0
+    untracked = 0
+    deleted = 0
+    has_conflicts = False
+    has_tracked_changes = False
+    branch_oid: str | None = None
+    branch_head: str | None = None
+    upstream: str | None = None
+    ahead = behind = 0
+
+    records = output.split("\0")
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        if record.startswith("# "):
+            header, _, value = record[2:].partition(" ")
+            if header == "branch.oid":
+                branch_oid = value
+            elif header == "branch.head":
+                branch_head = value
+            elif header == "branch.upstream":
+                upstream = value
+            elif header == "branch.ab":
+                match = re.fullmatch(r"\+(\d+) -(\d+)", value)
+                if match:
+                    ahead = int(match.group(1))
+                    behind = int(match.group(2))
+            continue
+        if record.startswith("? "):
+            untracked += 1
+            continue
+
+        record_kind, _, remainder = record.partition(" ")
+        if record_kind not in {"1", "2", "u"}:
+            continue
+        has_tracked_changes = True
+        code, _, _ = remainder.partition(" ")
+        if record_kind == "u" or code in {"AA", "DD"} or "U" in code:
+            has_conflicts = True
+        if "D" in code:
+            deleted += 1
+        if any(status in {"M", "A", "R", "C", "T"} for status in code):
+            modified += 1
+        if record_kind == "2":
+            # With -z, a rename/copy record's original path is the next item.
+            index += 1
+
+    return StatusSnapshot(
+        parsed=ParsedStatus(
+            modified_count=modified,
+            untracked_count=untracked,
+            deleted_count=deleted,
+            has_conflicts=has_conflicts,
+            has_tracked_changes=has_tracked_changes,
+        ),
+        branch_oid=branch_oid,
+        branch_head=branch_head,
+        upstream=upstream,
+        ahead=ahead,
+        behind=behind,
     )
 
 
@@ -574,6 +734,32 @@ def diff_numstat_totals(repo: Repo) -> tuple[int, int]:
             added += adds
             removed += dels
     return added, removed
+
+
+def snapshot_branch_name(snapshot: StatusSnapshot) -> str:
+    if snapshot.branch_head == "(detached)":
+        if snapshot.branch_oid and not snapshot.branch_oid.startswith("("):
+            return f"DETACHED@{snapshot.branch_oid[:7]}"
+        return "DETACHED"
+    return snapshot.branch_head or "UNKNOWN"
+
+
+def tracking_display(repo: Repo, upstream: str | None) -> tuple[str | None, str | None]:
+    if upstream is None or repo.head.is_detached:
+        return upstream, None
+    try:
+        tracking = repo.active_branch.tracking_branch()
+    except (TypeError, GitCommandError):
+        return upstream, None
+    if tracking is None:
+        return upstream, None
+    remote_name = tracking.remote_name
+    remote_head = tracking.remote_head
+    if not remote_name or not remote_head:
+        return upstream, None
+    remote_ref = f"{remote_name}/{remote_head}"
+    remote_url = format_remote_urls(repo, remote_name)
+    return remote_ref, remote_url
 
 
 def compute_branch_tracking(repo: Repo) -> tuple[int, int, str | None, str | None]:
@@ -750,44 +936,31 @@ def latest_worktree_mtime(repo: Repo) -> float | None:
     if worktree_dir is None:
         return None
     worktree = Path(worktree_dir).resolve()
-    candidates: set[Path] = {worktree}
+    candidates: set[Path] = set()
 
     def _add_path(rel_path: str) -> None:
         if not rel_path:
             return
         if rel_path.startswith(".git/") or rel_path == ".git":
             return
-        absolute = (worktree / rel_path).resolve()
+        absolute = worktree / rel_path
         if not absolute.exists():
             return
-        try:
-            if absolute != worktree and not absolute.is_relative_to(worktree):
-                return
-        except AttributeError:
-            if absolute != worktree and worktree not in absolute.parents:
-                return
         candidates.add(absolute)
-        try:
-            if absolute.is_relative_to(worktree):
-                for parent in absolute.parents:
-                    candidates.add(parent)
-                    if parent == worktree:
-                        break
-        except AttributeError:
-            current = absolute
-            while current != worktree and worktree in current.parents:
-                candidates.add(current.parent)
-                current = current.parent
 
     try:
-        tracked = repo.git.ls_files().splitlines()
+        tracked = repo.git.ls_files("-z").split("\0")
     except GitCommandError:
         tracked = []
     for rel_path in tracked:
         _add_path(rel_path)
 
     try:
-        untracked = repo.git.ls_files("--others", "--exclude-standard").splitlines()
+        untracked = repo.git.ls_files(
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ).split("\0")
     except GitCommandError:
         untracked = []
     for rel_path in untracked:
@@ -853,11 +1026,14 @@ def unescalate_sentinel_file_exists(repo: Repo, sentinel: str) -> bool:
 __all__ = [
     "ParsedStatus",
     "RepoReport",
+    "StatusSnapshot",
     "collect_reports",
     "collect_reports_parallel",
+    "collect_status_snapshot",
     "has_exceptional_state",
     "latest_worktree_mtime",
     "parse_status_porcelain",
+    "parse_status_porcelain_v2",
     "render_status_segments",
     "simplify_url",
 ]

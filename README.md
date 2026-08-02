@@ -79,6 +79,10 @@ column. It cannot be combined with `--dirty-only`, `--pull-safe`,
 `--push-safe`, `--sort mtime`, or `--where`/`--print` expressions that use
 unavailable fields.
 
+Worktree mtime is the latest modification time among existing tracked files
+and nonignored untracked files. Ignored files and directory metadata do not
+affect it.
+
 ## Branch Status
 
 ```bash

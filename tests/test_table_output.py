@@ -82,6 +82,25 @@ class TableKeyOutputTests(unittest.TestCase):
         self.assertIn("main", output)
         self.assertIn("Modified", output)
 
+    def test_column_ids_switches_headers_to_identifiers(self) -> None:
+        console = Console(record=True, width=120)
+        report = self._make_report(status_segments=[("1m", "yellow", "core")])
+
+        render_table(
+            console,
+            [report],
+            columns=["branch", "remote", "url"],
+            column_ids=True,
+        )
+        output = console.export_text()
+
+        self.assertIn("branch", output)
+        self.assertIn("remote", output)
+        self.assertIn("url", output)
+        self.assertNotIn("Branch", output)
+        self.assertNotIn("Remote", output)
+        self.assertNotIn("URL", output)
+
     def test_metadata_only_key_and_columns_mark_worktree_unchecked(self) -> None:
         console = Console(record=True, width=120)
         report = self._make_report(status_segments=[("?", "bright_black", "core")])

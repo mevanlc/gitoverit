@@ -24,13 +24,15 @@ def render_table(
     *,
     minimize_chars: bool = False,
     columns: list[str] | None = None,
+    column_ids: bool = False,
 ) -> None:
     active_columns = columns if columns is not None else DEFAULT_COLUMNS
     table = AutoTable(width="fill", minimize_chars=minimize_chars)
 
     for column in active_columns:
         header_factory, priority = _COLUMN_DEFS[column]
-        table.add_column(header_factory(), priority=priority)
+        header = _header_cell(column) if column_ids else header_factory()
+        table.add_column(header, priority=priority)
 
     for report in reports:
         table.add_row(*[_row_value(column, report) for column in active_columns])

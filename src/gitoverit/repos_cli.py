@@ -13,7 +13,7 @@ import typer
 from rich.console import Console
 from simpleeval import DEFAULT_NAMES, SimpleEval
 
-from .output import parse_columns, render_json, render_table
+from .output import parse_columns, parse_ralign, render_json, render_table
 from .output.table import DEFAULT_COLUMNS, METADATA_ONLY_DEFAULT_COLUMNS
 from .progress import RichHook, SilentHook
 from .reporting import RepoReport, collect_reports_parallel, render_status_segments
@@ -231,6 +231,16 @@ def repos(
         help="Comma-separated column spec: col to add, -col to remove, - to clear all. "
         "Columns: dir,status,branch,remote,url,mtime,branch_remote,ident",
     ),
+    right_align: Optional[str] = typer.Option(
+        None,
+        "--ralign",
+        help="Comma-separated column specs to right-justify.",
+    ),
+    column_ids: bool = typer.Option(
+        False,
+        "--columns-ids",
+        help="Display column identifiers instead of column names in table headers.",
+    ),
     where: Optional[str] = typer.Option(
         None,
         "-w", "--where",
@@ -278,10 +288,13 @@ def repos(
             )
         else:
             columns = parse_columns(columns_spec) if columns_spec else None
+    active_columns = DEFAULT_COLUMNS if columns is None else columns
+    right_align_columns: list[str] = []
+    if output_format is OutputFormat.TABLE and print_expr is None and right_align:
+        right_align_columns = parse_ralign(right_align, columns=active_columns)
     expression_names = _expression_names(where or "") | _expression_names(
         print_expr or ""
     )
-    active_columns = DEFAULT_COLUMNS if columns is None else columns
     collect_mtime = not metadata_only and (
         effective_sort is SortMode.MTIME
         or bool(expression_names & {"mtime", "latest_mtime"})
@@ -320,7 +333,14 @@ def repos(
         typer.echo(render_json(reports))
     else:
         minimize_chars = table_algo is TableAlgo.CHAR
-        render_table(console, reports, minimize_chars=minimize_chars, columns=columns)
+        render_table(
+            console,
+            reports,
+            minimize_chars=minimize_chars,
+            columns=columns,
+            right_align=right_align_columns,
+            column_ids=column_ids,
+        )
 
     if show_errors and hook:
         _emit_errors(hook.get_errors())

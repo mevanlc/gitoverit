@@ -3,6 +3,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -109,6 +110,7 @@ class BranchCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("--glob", result.stdout)
         self.assertIn("--json", result.stdout)
+        self.assertIn("--columns-ids", result.stdout)
         self.assertIn("FIELD", result.stdout)
         self.assertIn("Valid fields:", result.stdout)
         for sort_mode in SortMode:
@@ -131,6 +133,19 @@ class BranchCliTests(unittest.TestCase):
             self.assertIn("topic", branches)
             self.assertIn("worktree", branches[current_branch])
             self.assertIn("current", branches[current_branch])
+
+    def test_cli_passes_columns_ids_to_render_table(self) -> None:
+        with (
+            TemporaryDirectory() as tmpdir,
+            patch("gitoverit.branches_cli.collect_branch_reports", return_value=[]),
+            patch("gitoverit.branches_cli.render_table") as render_table,
+        ):
+            repo = Path(tmpdir) / "repo"
+            repo.mkdir()
+            result = RUNNER.invoke(APP, [str(repo), "--columns-ids"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(render_table.call_args.kwargs["column_ids"])
 
     def test_glob_and_print_filter_branch_names(self) -> None:
         with TemporaryDirectory() as tmpdir:

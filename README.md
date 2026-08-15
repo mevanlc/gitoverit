@@ -43,6 +43,8 @@ Common options:
 -j, --jobs N               Worker count. Omit for auto; 0 for sequential.
 -a, --table-algo {cell,char}
 -c, --columns SPEC         Add/remove/reset table columns.
+    --ralign SPEC            Comma-separated column specs to right-justify.
+    --columns-ids            Display column ids instead of column names.
 -w, --where EXPR           Filter rows by expression.
 -p, --print EXPR           Print one expression result per repo.
 -0, --print0               Use NUL delimiters with --print.
@@ -78,6 +80,8 @@ fields as `null`. The mode defaults to directory sorting and omits the mtime
 column. It cannot be combined with `--dirty-only`, `--pull-safe`,
 `--push-safe`, `--sort mtime`, or `--where`/`--print` expressions that use
 unavailable fields.
+`--where`/`--print` expressions are evaluated safely via
+[simpleeval](https://github.com/danthedeckie/simpleeval).
 
 Worktree mtime is the latest modification time among existing tracked files
 and nonignored untracked files. Ignored files and directory metadata do not
@@ -104,6 +108,7 @@ Common options:
 -0, --print0               Use NUL delimiters with --print.
 -a, --table-algo {cell,char}
 -c, --columns SPEC         Add/remove/reset table columns.
+    --columns-ids            Display column ids instead of column names.
 -w, --where EXPR           Filter rows by expression.
     --help-where           Show expression reference.
 ```

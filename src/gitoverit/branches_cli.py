@@ -205,6 +205,11 @@ def branches(
             "worktree,date,author,subject"
         ),
     ),
+    column_ids: bool = typer.Option(
+        False,
+        "--columns-ids",
+        help="Display column identifiers instead of column names in table headers.",
+    ),
     where: str | None = typer.Option(
         None,
         "-w",
@@ -250,7 +255,13 @@ def branches(
         typer.echo(render_json(reports, columns=columns))
     else:
         minimize_chars = table_algo is TableAlgo.CHAR
-        render_table(console, reports, minimize_chars=minimize_chars, columns=columns)
+        render_table(
+            console,
+            reports,
+            minimize_chars=minimize_chars,
+            columns=columns,
+            column_ids=column_ids,
+        )
 
 
 class _RxStr(str):

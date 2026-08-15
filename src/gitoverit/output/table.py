@@ -128,6 +128,7 @@ class AutoTable:
 
     _columns: list[AutoColumn] = field(default_factory=list)
     _rows: list[list[ResponsiveCell]] = field(default_factory=list)
+    _right_align: frozenset[int] = field(default_factory=frozenset)
 
     def add_column(
         self,
@@ -564,6 +565,7 @@ class AutoTable:
         cells: Sequence[ResponsiveCell],
         widths: list[int],
         is_header: bool = False,
+        right_align: frozenset[int] | set[int] | None = None,
     ) -> Iterable[Segment]:
         """Render a single row of the table."""
         if self.box_style:
@@ -581,11 +583,14 @@ class AutoTable:
                 text = text.copy()
                 text.stylize("bold")
             content_width = cell_len(text.plain)
+            align_pad = width - content_width if (right_align and i in right_align) else 0
+            if align_pad > 0:
+                yield Segment(" " * align_pad)
 
             for seg in text.render(Console()):
                 yield seg
 
-            padding_needed = width - content_width
+            padding_needed = width - content_width - align_pad
             if padding_needed > 0:
                 yield Segment(" " * padding_needed)
 
@@ -623,14 +628,19 @@ class AutoTable:
             yield Segment("\n")
 
         headers = [col.header for col in self._columns]
-        yield from self._render_row(headers, content_widths, is_header=True)
+        yield from self._render_row(
+            headers,
+            content_widths,
+            is_header=True,
+            right_align=self._right_align,
+        )
 
         if self.box_style:
             yield Segment(self.box_style.get_row(box_widths, level="head"))
             yield Segment("\n")
 
         for row in self._rows:
-            yield from self._render_row(row, content_widths)
+            yield from self._render_row(row, content_widths, right_align=self._right_align)
 
         if self.box_style:
             yield Segment(self.box_style.get_bottom(box_widths))
@@ -670,6 +680,21 @@ def _status_key_main(*, show_checked: bool, show_unchecked: bool) -> Text:
         add("U", "pushed", "green")
 
     return text
+
+
+def parse_ralign(spec: str, *, columns: Sequence[str]) -> list[str]:
+    """Parse comma-separated right-aligned column specs."""
+    known = set(columns)
+    result: list[str] = []
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token not in known:
+            raise ValueError(f"Unknown column: {token!r}")
+        if token not in result:
+            result.append(token)
+    return result
 
 
 def _status_key_exceptional(*, conflicts_checked: bool) -> Text:
@@ -786,6 +811,10 @@ def _header_cell(*labels: str) -> ResponsiveCell:
     return ResponsiveCell(variants=tuple(Text(lbl) for lbl in labels))
 
 
+def _column_id_header(column: str) -> ResponsiveCell:
+    return ResponsiveCell(variants=(Text(column),))
+
+
 def _branch_remote_header() -> ResponsiveCell:
     colon = (":", "color(240)")
     return ResponsiveCell(variants=(
@@ -873,8 +902,14 @@ def render_table(
     *,
     minimize_chars: bool = False,
     columns: list[str] | None = None,
+    right_align: Sequence[str] | None = None,
+    column_ids: bool = False,
 ) -> None:
     active_columns = columns if columns is not None else DEFAULT_COLUMNS
+    right_align_set = frozenset(right_align or ())
+    right_align_indexes = frozenset(
+        idx for idx, col in enumerate(active_columns) if col in right_align_set
+    )
 
     show_exceptional_key = any(
         any(seg[0] == "!" for seg in report.status_segments) for report in reports
@@ -894,10 +929,12 @@ def render_table(
             pass
 
     table = AutoTable(width="fill", minimize_chars=minimize_chars)
+    table._right_align = right_align_indexes
     for col in active_columns:
         header_factory, default_priority = _COLUMN_DEFS[col]
+        header = _column_id_header(col) if column_ids else header_factory()
         priority = priority_overrides.get(col, default_priority)
-        table.add_column(header_factory(), priority=priority)
+        table.add_column(header, priority=priority)
 
     for report in reports:
         table.add_row(*[_row_value(col, report) for col in active_columns])
@@ -921,6 +958,7 @@ __all__ = [
     "DEFAULT_COLUMNS",
     "METADATA_ONLY_DEFAULT_COLUMNS",
     "ResponsiveCell",
+    "parse_ralign",
     "parse_columns",
     "render_table",
 ]

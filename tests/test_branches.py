@@ -110,7 +110,7 @@ class BranchCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("--glob", result.stdout)
         self.assertIn("--json", result.stdout)
-        self.assertIn("--columns-ids", result.stdout)
+        self.assertIn("--id-columns", result.stdout)
         self.assertIn("FIELD", result.stdout)
         self.assertIn("Valid fields:", result.stdout)
         for sort_mode in SortMode:
@@ -134,7 +134,7 @@ class BranchCliTests(unittest.TestCase):
             self.assertIn("worktree", branches[current_branch])
             self.assertIn("current", branches[current_branch])
 
-    def test_cli_passes_columns_ids_to_render_table(self) -> None:
+    def test_cli_passes_id_columns_to_render_table(self) -> None:
         with (
             TemporaryDirectory() as tmpdir,
             patch("gitoverit.branches_cli.collect_branch_reports", return_value=[]),
@@ -142,10 +142,10 @@ class BranchCliTests(unittest.TestCase):
         ):
             repo = Path(tmpdir) / "repo"
             repo.mkdir()
-            result = RUNNER.invoke(APP, [str(repo), "--columns-ids"])
+            result = RUNNER.invoke(APP, [str(repo), "--id-columns"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertTrue(render_table.call_args.kwargs["column_ids"])
+        self.assertTrue(render_table.call_args.kwargs["id_columns"])
 
     def test_glob_and_print_filter_branch_names(self) -> None:
         with TemporaryDirectory() as tmpdir:

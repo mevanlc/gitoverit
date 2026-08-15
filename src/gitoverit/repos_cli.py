@@ -236,9 +236,9 @@ def repos(
         "--ralign",
         help="Comma-separated column specs to right-justify.",
     ),
-    column_ids: bool = typer.Option(
+    id_columns: bool = typer.Option(
         False,
-        "--columns-ids",
+        "--id-columns",
         help="Display column identifiers instead of column names in table headers.",
     ),
     where: Optional[str] = typer.Option(
@@ -339,7 +339,7 @@ def repos(
             minimize_chars=minimize_chars,
             columns=columns,
             right_align=right_align_columns,
-            column_ids=column_ids,
+            id_columns=id_columns,
         )
 
     if show_errors and hook:

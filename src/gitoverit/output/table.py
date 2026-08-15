@@ -903,7 +903,7 @@ def render_table(
     minimize_chars: bool = False,
     columns: list[str] | None = None,
     right_align: Sequence[str] | None = None,
-    column_ids: bool = False,
+    id_columns: bool = False,
 ) -> None:
     active_columns = columns if columns is not None else DEFAULT_COLUMNS
     right_align_set = frozenset(right_align or ())
@@ -932,7 +932,7 @@ def render_table(
     table._right_align = right_align_indexes
     for col in active_columns:
         header_factory, default_priority = _COLUMN_DEFS[col]
-        header = _column_id_header(col) if column_ids else header_factory()
+        header = _column_id_header(col) if id_columns else header_factory()
         priority = priority_overrides.get(col, default_priority)
         table.add_column(header, priority=priority)
 

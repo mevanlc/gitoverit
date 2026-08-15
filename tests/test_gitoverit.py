@@ -47,7 +47,7 @@ class ReposCliTests(unittest.TestCase):
         self.assertIn("Scan git repositories beneath the given directories", result.stdout)
         self.assertIn("--metadata-only", result.stdout)
         self.assertIn("--push-safe", result.stdout)
-        self.assertIn("--columns-ids", result.stdout)
+        self.assertIn("--id-columns", result.stdout)
         self.assertIn("FIELD", result.stdout)
         self.assertIn("Valid fields:", result.stdout)
         for sort_mode in SortMode:
@@ -121,16 +121,16 @@ class ReposCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(collect.call_args.kwargs["collect_mtime"])
 
-    def test_cli_passes_columns_ids_to_render_table(self) -> None:
+    def test_cli_passes_id_columns_to_render_table(self) -> None:
         with (
             patch("gitoverit.repos_cli.collect_reports_parallel", return_value=[]),
             patch("gitoverit.repos_cli._sort_reports"),
             patch("gitoverit.repos_cli.render_table") as render_table,
         ):
-            result = RUNNER.invoke(APP, ["--columns-ids", "--no-progress"])
+            result = RUNNER.invoke(APP, ["--id-columns", "--no-progress"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertTrue(render_table.call_args.kwargs["column_ids"])
+        self.assertTrue(render_table.call_args.kwargs["id_columns"])
 
 
 class ParseStatusTests(unittest.TestCase):

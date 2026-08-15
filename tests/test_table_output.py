@@ -82,7 +82,7 @@ class TableKeyOutputTests(unittest.TestCase):
         self.assertIn("main", output)
         self.assertIn("Modified", output)
 
-    def test_column_ids_switches_headers_to_identifiers(self) -> None:
+    def test_id_columns_switches_headers_to_identifiers(self) -> None:
         console = Console(record=True, width=120)
         report = self._make_report(status_segments=[("1m", "yellow", "core")])
 
@@ -90,7 +90,7 @@ class TableKeyOutputTests(unittest.TestCase):
             console,
             [report],
             columns=["branch", "remote", "url"],
-            column_ids=True,
+            id_columns=True,
         )
         output = console.export_text()
 

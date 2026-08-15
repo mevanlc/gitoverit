@@ -44,7 +44,7 @@ Common options:
 -a, --table-algo {cell,char}
 -c, --columns SPEC         Add/remove/reset table columns.
     --ralign SPEC            Comma-separated column specs to right-justify.
-    --columns-ids            Display column ids instead of column names.
+    --id-columns             Display column ids instead of column names.
 -w, --where EXPR           Filter rows by expression.
 -p, --print EXPR           Print one expression result per repo.
 -0, --print0               Use NUL delimiters with --print.
@@ -108,7 +108,7 @@ Common options:
 -0, --print0               Use NUL delimiters with --print.
 -a, --table-algo {cell,char}
 -c, --columns SPEC         Add/remove/reset table columns.
-    --columns-ids            Display column ids instead of column names.
+    --id-columns             Display column ids instead of column names.
 -w, --where EXPR           Filter rows by expression.
     --help-where           Show expression reference.
 ```

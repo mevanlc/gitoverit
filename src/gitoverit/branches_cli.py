@@ -205,9 +205,9 @@ def branches(
             "worktree,date,author,subject"
         ),
     ),
-    column_ids: bool = typer.Option(
+    id_columns: bool = typer.Option(
         False,
-        "--columns-ids",
+        "--id-columns",
         help="Display column identifiers instead of column names in table headers.",
     ),
     where: str | None = typer.Option(
@@ -260,7 +260,7 @@ def branches(
             reports,
             minimize_chars=minimize_chars,
             columns=columns,
-            column_ids=column_ids,
+            id_columns=id_columns,
         )
 
 

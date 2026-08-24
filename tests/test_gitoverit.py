@@ -5,6 +5,7 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from traceback import TracebackException
 from unittest.mock import patch
 
 from git import Actor, Git, Repo
@@ -48,6 +49,7 @@ class ReposCliTests(unittest.TestCase):
         self.assertIn("--metadata-only", result.stdout)
         self.assertIn("--push-safe", result.stdout)
         self.assertIn("--id-columns", result.stdout)
+        self.assertIn("--verbose", result.stdout)
         self.assertIn("FIELD", result.stdout)
         self.assertIn("Valid fields:", result.stdout)
         for sort_mode in SortMode:
@@ -131,6 +133,38 @@ class ReposCliTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(render_table.call_args.kwargs["id_columns"])
+
+    def test_errors_are_terse_unless_verbose(self) -> None:
+        def collect_with_error(*args, **kwargs):
+            hook = kwargs["hook"]
+            try:
+                raise RuntimeError("status failed\n    detail")
+            except RuntimeError as exc:
+                hook.error(Path("broken-repo"), TracebackException.from_exception(exc))
+            return []
+
+        for extra_args, traceback_expected in (([], False), (["--verbose"], True)):
+            with (
+                self.subTest(extra_args=extra_args),
+                patch(
+                    "gitoverit.repos_cli.collect_reports_parallel",
+                    side_effect=collect_with_error,
+                ),
+                patch("gitoverit.repos_cli.render_table"),
+            ):
+                result = RUNNER.invoke(
+                    APP,
+                    ["--errors", "--no-progress", *extra_args],
+                )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("broken-repo", result.output)
+            self.assertIn("RuntimeError: status failed", result.output)
+            self.assertIn("detail", result.output)
+            self.assertEqual(
+                "Traceback (most recent call last):" in result.output,
+                traceback_expected,
+            )
 
 
 class ParseStatusTests(unittest.TestCase):

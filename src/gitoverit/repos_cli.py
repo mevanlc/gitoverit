@@ -250,7 +250,12 @@ def repos(
     show_errors: bool = typer.Option(
         False,
         "--errors",
-        help="Print error details to stderr after all output is complete.",
+        help="Print error summaries to stderr after all output is complete.",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="With --errors, include full tracebacks.",
     ),
     no_progress: bool = typer.Option(
         False,
@@ -343,7 +348,7 @@ def repos(
         )
 
     if show_errors and hook:
-        _emit_errors(hook.get_errors())
+        _emit_errors(hook.get_errors(), verbose=verbose)
 
 
 class _RxStr(str):
@@ -511,7 +516,11 @@ def _report_sort_key(report: RepoReport, sort: SortMode) -> SortKey:
     raise ValueError(f"Unsupported sort mode: {sort}")
 
 
-def _emit_errors(errors: list[tuple[Path, TracebackException | None]]) -> None:
+def _emit_errors(
+    errors: list[tuple[Path, TracebackException | None]],
+    *,
+    verbose: bool = False,
+) -> None:
     if not errors:
         return
     stderr = Console(stderr=True, highlight=False)
@@ -519,8 +528,12 @@ def _emit_errors(errors: list[tuple[Path, TracebackException | None]]) -> None:
     for path, tb in errors:
         stderr.print(f"\n[bold]{path}[/bold]")
         if tb is not None:
-            for line in tb.format():
-                stderr.print(line, end="")
+            if verbose:
+                for line in tb.format():
+                    stderr.print(line, end="", markup=False)
+            else:
+                exception_name = tb.exc_type.__name__ if tb.exc_type else "Exception"
+                stderr.print(f"{exception_name}: {tb}", markup=False)
         else:
             stderr.print("  (no traceback available)")
 

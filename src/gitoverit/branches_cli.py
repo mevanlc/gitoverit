@@ -106,6 +106,10 @@ FUNCTIONS
 
   rx(string, pattern)    Regex search (case-sensitive)
   rxi(string, pattern)   Regex search (case-insensitive)
+  locals()               Copy of the current row's variable dictionary
+  dir()                  Sorted list of variable names (no arguments)
+
+  These helpers include True, False, and None, but exclude function names.
 
 EXAMPLES
 
@@ -313,6 +317,8 @@ def _filter_reports(reports: list[BranchReport], expr: str) -> list[BranchReport
     evaluator = SimpleEval()
     evaluator.functions["rx"] = _rx
     evaluator.functions["rxi"] = _rxi
+    evaluator.functions["locals"] = lambda: dict(evaluator.names)
+    evaluator.functions["dir"] = lambda: sorted(evaluator.names)
     parsed = evaluator.parse(expr)
     result: list[BranchReport] = []
     for report in reports:
@@ -326,6 +332,8 @@ def _print_reports(reports: list[BranchReport], expr: str, *, null_delimited: bo
     evaluator = SimpleEval()
     evaluator.functions["rx"] = _rx
     evaluator.functions["rxi"] = _rxi
+    evaluator.functions["locals"] = lambda: dict(evaluator.names)
+    evaluator.functions["dir"] = lambda: sorted(evaluator.names)
     parsed = evaluator.parse(expr)
     end = "\0" if null_delimited else "\n"
     for report in reports:

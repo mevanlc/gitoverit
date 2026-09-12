@@ -112,6 +112,11 @@ FUNCTIONS
 
   rx(string, pattern)    Regex search (case-sensitive)
   rxi(string, pattern)   Regex search (case-insensitive)
+  locals()               Copy of the current row's variable dictionary
+  dir()                  Sorted list of variable names (no arguments)
+
+  These helpers include True, False, and None, but exclude function names.
+  The bare dir variable still gives the repository's display path.
 
 EXAMPLES
 
@@ -459,6 +464,8 @@ def _filter_reports(reports: list[RepoReport], expr: str) -> list[RepoReport]:
     evaluator = SimpleEval()
     evaluator.functions["rx"] = _rx
     evaluator.functions["rxi"] = _rxi
+    evaluator.functions["locals"] = lambda: dict(evaluator.names)
+    evaluator.functions["dir"] = lambda: sorted(evaluator.names)
     parsed = evaluator.parse(expr)
     result: list[RepoReport] = []
     for report in reports:
@@ -474,6 +481,8 @@ def _print_reports(
     evaluator = SimpleEval()
     evaluator.functions["rx"] = _rx
     evaluator.functions["rxi"] = _rxi
+    evaluator.functions["locals"] = lambda: dict(evaluator.names)
+    evaluator.functions["dir"] = lambda: sorted(evaluator.names)
     parsed = evaluator.parse(expr)
     end = "\0" if null_delimited else "\n"
     for report in reports:

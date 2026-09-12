@@ -82,6 +82,12 @@ column. It cannot be combined with `--dirty-only`, `--pull-safe`,
 unavailable fields.
 `--where`/`--print` expressions are evaluated safely via
 [simpleeval](https://github.com/danthedeckie/simpleeval).
+Both repo and branch expressions support `locals()` to copy the current row's
+variable dictionary and `dir()` to list its variable names in sorted order.
+These include `True`, `False`, and `None`, but exclude function names.
+For example, `gito -p 'locals()'` prints each repo's variables, and
+`gitob -p 'dir()'` lists the branch variables. The bare `dir` variable in repo
+expressions still gives the repository's display path.
 
 Worktree mtime is the latest modification time among existing tracked files
 and nonignored untracked files. Ignored files and directory metadata do not

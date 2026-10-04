@@ -9,6 +9,7 @@ from traceback import TracebackException
 from unittest.mock import patch
 
 from git import Actor, Git, Repo
+from simpleeval import FeatureNotAvailable
 from typer.testing import CliRunner
 
 from gitoverit.output import render_json
@@ -1137,6 +1138,45 @@ class PrintReportsTests(unittest.TestCase):
         finally:
             sys.stdout = old_stdout
         self.assertEqual(buf.getvalue(), "/home/user/a\n/home/user/b\n")
+
+    def test_print_columns(self) -> None:
+        reports = [
+            self._make_report(
+                path=Path("/a"), display_path="a", branch="feature/a", ahead=2,
+                status_segments=[("1m", "yellow", "core")],
+            ),
+            self._make_report(
+                path=Path("/b"), display_path="b", branch="feature/b", ahead=0,
+                status_segments=[("1u", "red", "core")],
+            ),
+        ]
+        cases = [
+            ("path, dir, status, branch", ["/a\ta\t1m\tfeature/a", "/b\tb\t1u\tfeature/b"]),
+            ("(path, dir, status, branch)", ["/a\ta\t1m\tfeature/a", "/b\tb\t1u\tfeature/b"]),
+            (
+                'branch.replace("feature/", ""), "left,right", ahead',
+                ["a\tleft,right\t2", "b\tleft,right\t0"],
+            ),
+            ('locals()["branch"], "path" in dir()', ["feature/a\tTrue", "feature/b\tTrue"]),
+            ("path,", ["/a", "/b"]),
+            ('path, "tab\\tnewline\\n"', ["/a\ttab\tnewline\n", "/b\ttab\tnewline\n"]),
+        ]
+        for expr, rows in cases:
+            for null_delimited in (False, True):
+                with self.subTest(expr=expr, null_delimited=null_delimited):
+                    buf = io.StringIO()
+                    with patch("sys.stdout", buf):
+                        _print_reports(reports, expr, null_delimited=null_delimited)
+                    end = "\0" if null_delimited else "\n"
+                    self.assertEqual(buf.getvalue(), "".join(row + end for row in rows))
+
+    def test_print_columns_preserves_attribute_checks_without_partial_row(self) -> None:
+        buf = io.StringIO()
+        with patch("sys.stdout", buf), self.assertRaises(FeatureNotAvailable):
+            _print_reports(
+                [self._make_report()], "path, branch.__class__", null_delimited=False
+            )
+        self.assertEqual(buf.getvalue(), "")
 
     def test_print_null_delimited(self) -> None:
         reports = [

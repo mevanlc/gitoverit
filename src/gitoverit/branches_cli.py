@@ -13,6 +13,7 @@ from simpleeval import DEFAULT_NAMES, SimpleEval
 
 from .branches import BranchCollectionError, BranchReport, collect_branch_reports
 from .branches_output import parse_columns, render_json, render_table
+from .output.expression import render_expression
 
 console = Console()
 
@@ -129,6 +130,10 @@ NOTES
 
   `--print / -p` uses the same variables and expression language to print a
   value per branch row.
+  Comma-separated expressions print tab-separated values, for example:
+    -p 'path, status, branch'
+  With -0, rows end with a NUL byte; columns remain tab-separated.
+  Values are printed as-is, without quoting or escaping tabs or newlines.
 """
 
 
@@ -184,7 +189,8 @@ def branches(
         None,
         "-p",
         "--print",
-        help="Evaluate expression per branch and print results, one per line.",
+        help="Evaluate expression per branch and print results, one per line. "
+        "Comma-separated expressions print tab-separated values.",
     ),
     print0: bool = typer.Option(
         False,
@@ -338,7 +344,7 @@ def _print_reports(reports: list[BranchReport], expr: str, *, null_delimited: bo
     end = "\0" if null_delimited else "\n"
     for report in reports:
         evaluator.names = _report_names(report)
-        value = evaluator.eval(expr, previously_parsed=parsed)
+        value = render_expression(evaluator, expr, parsed)
         sys.stdout.write(f"{value}{end}")
     sys.stdout.flush()
 

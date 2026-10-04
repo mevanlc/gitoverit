@@ -14,6 +14,7 @@ from rich.console import Console
 from simpleeval import DEFAULT_NAMES, SimpleEval
 
 from .output import parse_columns, parse_ralign, render_json, render_table
+from .output.expression import render_expression
 from .output.table import DEFAULT_COLUMNS, METADATA_ONLY_DEFAULT_COLUMNS
 from .progress import RichHook, SilentHook
 from .reporting import RepoReport, collect_reports_parallel, render_status_segments
@@ -150,6 +151,10 @@ NOTES
 
   The --print / -p option uses the same variables and expression
   language to evaluate and print a value per repo.
+  Comma-separated expressions print tab-separated values, for example:
+    -p 'path, dir, status, branch'
+  With -0, rows end with a NUL byte; columns remain tab-separated.
+  Values are printed as-is, without quoting or escaping tabs or newlines.
 """
 
 
@@ -217,7 +222,7 @@ def repos(
         None,
         "-p", "--print",
         help="Evaluate expression per repo and print results, one per line. "
-        "Same variables as --where, plus path.",
+        "Comma-separated expressions print tab-separated values. Same variables as --where.",
     ),
     print0: bool = typer.Option(
         False,
@@ -487,7 +492,7 @@ def _print_reports(
     end = "\0" if null_delimited else "\n"
     for report in reports:
         evaluator.names = _report_names(report)
-        value = evaluator.eval(expr, previously_parsed=parsed)
+        value = render_expression(evaluator, expr, parsed)
         sys.stdout.write(f"{value}{end}")
     sys.stdout.flush()
 

@@ -161,6 +161,22 @@ class BranchCliTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 0)
             self.assertEqual(result.stdout.strip(), "topic")
 
+    def test_print_columns(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            init_repo(repo)
+            git(repo, "branch", "topic")
+
+            for null_delimited in (False, True):
+                with self.subTest(null_delimited=null_delimited):
+                    args = [str(repo), "--glob", "topic", "--print", "branch, path, ahead, current"]
+                    if null_delimited:
+                        args.append("-0")
+                    result = RUNNER.invoke(APP, args)
+                    self.assertEqual(result.exit_code, 0, result.output)
+                    end = "\0" if null_delimited else "\n"
+                    self.assertEqual(result.stdout, f"topic\t{repo.resolve()}\t0\tFalse{end}")
+
 
 if __name__ == "__main__":
     unittest.main()

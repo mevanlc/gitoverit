@@ -89,6 +89,17 @@ For example, `gito -p 'locals()'` prints each repo's variables, and
 `gitob -p 'dir()'` lists the branch variables. The bare `dir` variable in repo
 expressions still gives the repository's display path.
 
+With `--print`, comma-separated expressions produce tab-separated columns:
+
+```bash
+gito -p 'path, dir, status, branch'
+gitob -p 'branch, ahead, behind'
+```
+
+Each row ends with a newline, or a NUL byte with `-0`. Values are printed as-is,
+without quoting or escaping embedded tabs or newlines. Single expressions keep
+their existing output format.
+
 Worktree mtime is the latest modification time among existing tracked files
 and nonignored untracked files. Ignored files and directory metadata do not
 affect it.

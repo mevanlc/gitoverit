@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from gitoverit.branches import collect_branch_reports
+from gitoverit.branches import _browse_url, collect_branch_reports
 from gitoverit.branches_cli import APP, SortMode
 
 RUNNER = CliRunner()
@@ -102,6 +102,31 @@ class BranchCollectorTests(unittest.TestCase):
             self.assertTrue(topic.gone)
             self.assertEqual(topic.ahead, 0)
             self.assertEqual(topic.behind, 0)
+
+
+class BrowseUrlTests(unittest.TestCase):
+    def test_empty_path_returns_none(self) -> None:
+        self.assertIsNone(_browse_url("ssh://git@github.com/"))
+        self.assertIsNone(_browse_url("git://github.com/"))
+
+    def test_valid_urls_still_rewritten(self) -> None:
+        self.assertEqual(
+            _browse_url("ssh://git@github.com/owner/repo.git"),
+            "https://github.com/owner/repo",
+        )
+        self.assertEqual(
+            _browse_url("git://github.com/owner/repo.git"),
+            "https://github.com/owner/repo",
+        )
+        self.assertEqual(
+            _browse_url("git@github.com:owner/repo.git"),
+            "https://github.com/owner/repo",
+        )
+        self.assertEqual(
+            _browse_url("https://github.com/owner/repo.git"),
+            "https://github.com/owner/repo",
+        )
+        self.assertIsNone(_browse_url(""))
 
 
 class BranchCliTests(unittest.TestCase):

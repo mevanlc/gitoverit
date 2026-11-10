@@ -332,6 +332,8 @@ def _browse_url(url: str) -> str | None:
             return None
         host, path = rest.split("/", 1)
         host = host.split(":", 1)[0]
+        if not path:
+            return None
         return f"https://{host}/{path.removesuffix('.git')}"
 
     if url.startswith("git://"):
@@ -339,6 +341,8 @@ def _browse_url(url: str) -> str | None:
         if "/" not in rest:
             return None
         host, path = rest.split("/", 1)
+        if not path:
+            return None
         return f"https://{host}/{path.removesuffix('.git')}"
 
     return None

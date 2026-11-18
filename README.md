@@ -38,6 +38,7 @@ Common options:
 -o, --format {table,json}  Output format. Default: table.
 -d, --dirty-only           Hide repos without uncommitted changes.
     --metadata-only        Skip worktree file inspection for a faster metadata crawl.
+    --nested N             Include repos nested up to N repo levels deep. Default: 0.
 -s, --sort FIELD           Sort by dir, path, name, status, branch, remote, url, mtime, ident, author, or none.
 -r, --reverse              Reverse sort order.
 -j, --jobs N               Worker count. Omit for auto; 0 for sequential.
@@ -60,9 +61,21 @@ gitoverit ~/projects
 gito ~/projects -d -s author
 gito ~/projects -f -o json
 gito ~/projects --metadata-only
+gito ~/projects --nested 1
 gito ~/projects -w 'branch != "main" and ahead > 0'
 gito ~/projects -w dirty -p path -0 | xargs -0 -n1 echo
 ```
+
+By default, discovery stops at each top-level repository. `--nested N` also
+includes repositories up to N repository boundaries below it, including ignored
+repositories. Ordinary directories do not count toward this limit: a repo at
+`top/vendor/lib` is depth 1 when `vendor` is an ordinary directory. A repo inside
+`lib` is depth 2.
+
+Each supplied scan directory starts a fresh depth count, and overlapping scans
+report each repo only once. Submodules and their entire directory trees are
+always excluded, even when a scan directory points directly into one.
+`--nested` replaces the former `--include-ignored` / `-I` option.
 
 `--pull-safe` and `--push-safe` can be combined. Both fetch before taking
 action and require a clean worktree. Pulling is limited to branches that are

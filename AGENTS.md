@@ -7,7 +7,7 @@
 - **Core Git inspection** resides in `src/gitoverit/reporting.py`. Key functions:
   - `collect_reports()` – convenience wrapper that calls `collect_reports_parallel` with `max_workers=0` (sequential).
   - `collect_reports_parallel()` – parallel version using ProcessPoolExecutor with streaming discovery (default mode).
-  - `discover_repositories()` – generator that walks directories yielding git repo paths. Skips submodule `.git` files and nested repos that are gitignored by their parent repo.
+  - `discover_repositories()` – generator that walks directories yielding git repo paths up to `nested` repository levels deep (default 0). Includes ignored repos within that limit and excludes submodule trees.
   - `analyze_repository()` – worker function that analyzes a single repo, returning a `RepoReport`.
   - `RepoReport` dataclass – canonical representation of a repo's status; renderers and tests consume this.
   - Utility functions like `parse_status_porcelain`, `simplify_url`, `latest_worktree_mtime`, etc.
@@ -20,9 +20,9 @@
 
 ## Discovery Filtering
 During directory walking, `discover_repositories()` applies these filters:
-- **Submodules**: Detected by `.git` being a file (not directory) containing `"modules"`. Skipped entirely, no descent.
-- **Gitignored nested repos**: When a repo is found inside another discovered repo, `git check-ignore -q` is run from the parent repo. If the nested path is ignored, it is skipped and descent is pruned.
-- **Deduplication**: A `seen` set of resolved paths prevents yielding the same repo twice (handles symlinks).
+- **Nested depth**: `--nested N` counts repository boundaries, not directory levels. Default 0 stops descent at the first repos found beneath each scan root; reaching the limit prunes descent. Ignored repos are included within the limit.
+- **Submodules**: Cached parent gitlinks, `.gitmodules` declarations, and resolved submodule Git-directory relationships identify excluded trees. Submodules and repos beneath them are skipped, including when scan roots point directly into those trees. Ancestors outside a scan root are checked only for exclusion, not depth.
+- **Deduplication**: A `seen` set of resolved paths prevents yielding the same repo twice (handles symlinks). Depth is tracked independently per scan root, so overlapping roots can extend discovery regardless of argument order.
 
 ## Parallelization Architecture
 - **Default mode**: Parallel processing with auto-detected worker count using ProcessPoolExecutor.

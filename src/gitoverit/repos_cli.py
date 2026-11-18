@@ -195,11 +195,12 @@ def repos(
         "--metadata-only",
         help="Skip worktree file inspection; dirty state, file counts, and mtime are unavailable.",
     ),
-    include_ignored: bool = typer.Option(
-        False,
-        "-I",
-        "--include-ignored",
-        help="Include nested repositories even when ignored by a parent repository.",
+    nested: int = typer.Option(
+        0,
+        "--nested",
+        min=0,
+        metavar="N",
+        help="Include repositories up to N repo levels below top-level repos, including ignored repos. Excludes submodule trees.",
     ),
     sort: Optional[SortMode] = typer.Option(
         None,
@@ -328,7 +329,7 @@ def repos(
         dirs,
         fetch=fetch or pull_safe or push_safe,
         dirty_only=dirty_only,
-        include_ignored=include_ignored,
+        nested=nested,
         pull_safe=pull_safe,
         push_safe=push_safe,
         metadata_only=metadata_only,

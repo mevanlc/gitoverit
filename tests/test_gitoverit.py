@@ -48,6 +48,7 @@ class ReposCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Scan git repositories beneath the given directories", result.stdout)
         self.assertIn("--metadata-only", result.stdout)
+        self.assertIn("--nested", result.stdout)
         self.assertIn("--push-safe", result.stdout)
         self.assertIn("--id-columns", result.stdout)
         self.assertIn("--verbose", result.stdout)
@@ -517,7 +518,213 @@ class ParseColumnsTests(unittest.TestCase):
 
 
 class DiscoverRepositoriesTests(unittest.TestCase):
-    def test_discovery_prunes_ignored_directories_before_descent(self) -> None:
+    def _repo(self, path: Path, *, commit: bool = False) -> Repo:
+        path.mkdir(parents=True, exist_ok=True)
+        repo = Repo.init(path)
+        if commit:
+            (path / "tracked.txt").write_text("initial\n")
+            repo.index.add(["tracked.txt"])
+            repo.index.commit("init", author=AUTHOR, committer=AUTHOR)
+        return repo
+
+    def _submodule(self, parent: Path, style: str) -> Path:
+        repo = self._repo(parent)
+        submodule = parent / "deps" / "sub module"
+        relative = submodule.relative_to(parent).as_posix()
+        if style == "absorbed":
+            source = parent.parent / "source"
+            self._repo(source, commit=True)
+            repo.git.execute([
+                "git", "-c", "protocol.file.allow=always", "submodule", "add",
+                str(source), relative,
+            ])
+        else:
+            child = self._repo(submodule, commit=True)
+            if style == "gitlink":
+                repo.git.update_index(
+                    "--add", "--cacheinfo", f"160000,{child.head.commit.hexsha},{relative}"
+                )
+            else:
+                repo.git.config(
+                    "--file", str(parent / ".gitmodules"), "submodule.example.path", relative
+                )
+        return submodule
+
+    def test_depth_counts_repositories_and_resets_for_siblings(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir).resolve()
+            top = root / "holder" / "top"
+            other_top = root / "holder" / "other"
+            first = top / "ordinary" / "directories" / "first"
+            second = first / "another" / "second"
+            sibling = top / "sibling"
+            for path in (top, other_top, first, second, sibling):
+                self._repo(path)
+
+            self.assertEqual(set(discover_repositories([root])), {top, other_top})
+            for depth, expected in (
+                (0, {top, other_top}),
+                (1, {top, other_top, first, sibling}),
+                (2, {top, other_top, first, sibling, second}),
+            ):
+                with self.subTest(depth=depth):
+                    self.assertEqual(set(discover_repositories([root], nested=depth)), expected)
+
+    def test_pruning_at_depth_limit_skips_repo_contents_and_git_directories(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            top = Path(tmpdir).resolve() / "top"
+            child = top / "child"
+            self._repo(top)
+            self._repo(child)
+            (child / "ordinary").mkdir()
+            walk = os.walk
+            visited: list[Path] = []
+
+            def recording_walk(root: Path):
+                for entry in walk(root):
+                    visited.append(Path(entry[0]))
+                    yield entry
+
+            for depth, expected in ((0, [top]), (1, [top, child])):
+                with self.subTest(depth=depth):
+                    visited.clear()
+                    with patch("gitoverit.reporting.os.walk", side_effect=recording_walk):
+                        self.assertEqual(list(discover_repositories([top], nested=depth)), expected)
+                    self.assertEqual(visited, expected)
+
+    def test_ignored_repositories_are_included_within_depth_limit(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            top = Path(tmpdir).resolve() / "top"
+            first = top / "vendor" / "first"
+            second = first / "second"
+            for path in (top, first, second):
+                self._repo(path)
+            (top / ".gitignore").write_text("vendor/\n")
+            (first / ".gitignore").write_text("second/\n")
+
+            for depth, expected in ((0, {top}), (1, {top, first}), (2, {top, first, second})):
+                with self.subTest(depth=depth):
+                    self.assertEqual(set(discover_repositories([top], nested=depth)), expected)
+
+    def test_explicit_scan_roots_reset_depth(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            top = Path(tmpdir).resolve() / "top"
+            first = top / "ordinary" / "first"
+            second = first / "second"
+            for path in (top, first, second):
+                self._repo(path)
+            for root in (first, first.parent):
+                with self.subTest(root=root):
+                    self.assertEqual(list(discover_repositories([root])), [first])
+                    self.assertEqual(set(discover_repositories([root], nested=1)), {first, second})
+
+    def test_overlapping_roots_are_deduplicated_without_losing_depth(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir).resolve()
+            top = base / "top"
+            first = top / "first"
+            second = first / "second"
+            for path in (top, first, second):
+                self._repo(path)
+            alias = base / "alias"
+            alias.symlink_to(first, target_is_directory=True)
+            for roots in ([top, first, alias], [alias, first, top]):
+                for depth, expected in ((0, {top, first}), (1, {top, first, second})):
+                    with self.subTest(roots=roots, depth=depth):
+                        paths = list(discover_repositories(roots, nested=depth))
+                        self.assertEqual(set(paths), expected)
+                        self.assertEqual(len(paths), len(expected))
+
+    def test_submodule_trees_are_excluded_even_as_explicit_roots(self) -> None:
+        for style in ("absorbed", "gitlink", "declared"):
+            with self.subTest(style=style), TemporaryDirectory() as tmpdir:
+                top = Path(tmpdir).resolve() / "top"
+                submodule = self._submodule(top, style)
+                child = submodule / "ordinary" / "child"
+                self._repo(child)
+                for roots, expected in (
+                    ([top], {top}),
+                    ([submodule], set()),
+                    ([child.parent], set()),
+                    ([child], set()),
+                    ([top, child], {top}),
+                    ([child, top], {top}),
+                ):
+                    with self.subTest(roots=roots):
+                        self.assertEqual(set(discover_repositories(roots, nested=3)), expected)
+
+    def test_absorbed_submodule_is_excluded_without_parent_declarations(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            top = Path(tmpdir).resolve() / "top"
+            submodule = self._submodule(top, "absorbed")
+            (top / ".gitmodules").unlink()
+            Repo(top).git.update_index("--force-remove", submodule.relative_to(top).as_posix())
+            self.assertEqual(list(discover_repositories([top], nested=3)), [top])
+            self.assertEqual(list(discover_repositories([submodule], nested=3)), [])
+
+    def test_declared_submodule_tree_without_checkout_is_excluded(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            top = Path(tmpdir).resolve() / "top"
+            parent = self._repo(top)
+            submodule = top / "deps" / "missing checkout"
+            child = submodule / "ordinary" / "child"
+            self._repo(child)
+            parent.git.config(
+                "--file", str(top / ".gitmodules"), "submodule.example.path",
+                submodule.relative_to(top).as_posix(),
+            )
+            self.assertEqual(list(discover_repositories([top], nested=2)), [top])
+            for root in (submodule, child.parent, child):
+                with self.subTest(root=root):
+                    self.assertEqual(list(discover_repositories([root], nested=2)), [])
+
+    def test_linked_worktrees_are_repositories_even_with_modules_in_the_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir).resolve()
+            main = self._repo(base / "modules" / "main", commit=True)
+            top = base / "top"
+            self._repo(top)
+            worktree = top / "linked"
+            main.git.worktree("add", "-b", "linked", str(worktree))
+            self.assertEqual(list(discover_repositories([top])), [top])
+            self.assertEqual(set(discover_repositories([top], nested=1)), {top, worktree})
+            self.assertEqual(list(discover_repositories([worktree])), [worktree])
+
+    def test_negative_depth_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "nested"):
+            list(discover_repositories([], nested=-1))
+
+    def test_cli_depth_limit_in_sequential_and_parallel_modes(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            top = Path(tmpdir).resolve() / "top"
+            first = top / "first"
+            second = first / "second"
+            for path in (top, first, second):
+                self._repo(path)
+            for jobs in ("0", "2"):
+                for options, expected in (
+                    ([], {top}),
+                    (["--nested", "1"], {top, first}),
+                    (["--nested", "2"], {top, first, second}),
+                ):
+                    with self.subTest(jobs=jobs, options=options):
+                        result = RUNNER.invoke(APP, [
+                            str(top), "--jobs", jobs, "--metadata-only",
+                            "--print", "path", "--no-progress", *options,
+                        ])
+                        self.assertEqual(result.exit_code, 0, result.output)
+                        self.assertEqual(set(result.stdout.splitlines()), {str(p) for p in expected})
+            reports = collect_reports([top], fetch=False, dirty_only=False, nested=1, metadata_only=True)
+            self.assertEqual({report.path for report in reports}, {top, first})
+
+    def test_cli_rejects_negative_depth_before_collection(self) -> None:
+        with patch("gitoverit.repos_cli.collect_reports_parallel") as collect:
+            result = RUNNER.invoke(APP, ["--nested", "-1"])
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("--nested", result.output)
+        collect.assert_not_called()
+
+    def test_discovery_prunes_at_default_depth(self) -> None:
         with TemporaryDirectory() as tmpdir:
             parent = Path(tmpdir) / "parent"
             parent.mkdir()
@@ -529,17 +736,11 @@ class DiscoverRepositoriesTests(unittest.TestCase):
                 yield str(root), dirnames, []
                 observed_dirnames.extend(dirnames)
 
-            with (
-                patch("gitoverit.reporting.os.walk", side_effect=fake_walk),
-                patch(
-                    "gitoverit.reporting._gitignored_directories",
-                    return_value={parent.resolve() / "ignored"},
-                ),
-            ):
+            with patch("gitoverit.reporting.os.walk", side_effect=fake_walk):
                 discovered = list(discover_repositories([parent]))
 
             self.assertEqual(discovered, [parent.resolve()])
-            self.assertEqual(observed_dirnames, ["kept"])
+            self.assertEqual(observed_dirnames, [])
 
     def test_gitignored_nested_repo_is_skipped(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -563,7 +764,7 @@ class DiscoverRepositoriesTests(unittest.TestCase):
             self.assertIn(parent.resolve(), resolved_paths)
             self.assertNotIn(nested.resolve(), resolved_paths)
 
-    def test_gitignored_nested_repo_is_found_with_include_ignored(self) -> None:
+    def test_gitignored_nested_repo_is_found_with_nested(self) -> None:
         with TemporaryDirectory() as tmpdir:
             parent = Path(tmpdir) / "parent"
             parent.mkdir()
@@ -579,7 +780,7 @@ class DiscoverRepositoriesTests(unittest.TestCase):
             nested.mkdir()
             Repo.init(nested)
 
-            discovered = list(discover_repositories([parent], include_ignored=True))
+            discovered = list(discover_repositories([parent], nested=1))
             resolved_paths = [p.resolve() for p in discovered]
             self.assertIn(parent.resolve(), resolved_paths)
             self.assertIn(nested.resolve(), resolved_paths)
@@ -595,7 +796,7 @@ class DiscoverRepositoriesTests(unittest.TestCase):
             nested.mkdir()
             Repo.init(nested)
 
-            discovered = list(discover_repositories([parent]))
+            discovered = list(discover_repositories([parent], nested=1))
             resolved_paths = [p.resolve() for p in discovered]
             self.assertIn(parent.resolve(), resolved_paths)
             self.assertIn(nested.resolve(), resolved_paths)
@@ -621,7 +822,7 @@ class DiscoverRepositoriesTests(unittest.TestCase):
             self.assertIn(parent.resolve(), resolved_paths)
             self.assertNotIn(vendor_lib.resolve(), resolved_paths)
 
-    def test_deeply_nested_under_gitignored_is_found_with_include_ignored(self) -> None:
+    def test_deeply_nested_under_gitignored_is_found_with_nested(self) -> None:
         with TemporaryDirectory() as tmpdir:
             parent = Path(tmpdir) / "parent"
             parent.mkdir()
@@ -637,7 +838,7 @@ class DiscoverRepositoriesTests(unittest.TestCase):
             vendor_lib.mkdir(parents=True)
             Repo.init(vendor_lib)
 
-            discovered = list(discover_repositories([parent], include_ignored=True))
+            discovered = list(discover_repositories([parent], nested=1))
             resolved_paths = [p.resolve() for p in discovered]
             self.assertIn(parent.resolve(), resolved_paths)
             self.assertIn(vendor_lib.resolve(), resolved_paths)

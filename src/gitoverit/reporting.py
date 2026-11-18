@@ -10,7 +10,7 @@ from traceback import TracebackException
 from typing import Callable, Iterable, Iterator, Sequence
 from urllib.parse import urlparse
 
-from git import GitCommandError, Repo
+from git import GitCommandError, InvalidGitRepositoryError, NoSuchPathError, Repo
 from rich.text import Text
 
 from .progress import HookProtocol
@@ -106,7 +106,7 @@ def collect_reports(
     *,
     fetch: bool,
     dirty_only: bool,
-    include_ignored: bool = False,
+    nested: int = 0,
     pull_safe: bool = False,
     push_safe: bool = False,
     metadata_only: bool = False,
@@ -118,7 +118,7 @@ def collect_reports(
         dirs,
         fetch=fetch,
         dirty_only=dirty_only,
-        include_ignored=include_ignored,
+        nested=nested,
         pull_safe=pull_safe,
         push_safe=push_safe,
         metadata_only=metadata_only,
@@ -145,7 +145,7 @@ def collect_reports_parallel(
     *,
     fetch: bool,
     dirty_only: bool,
-    include_ignored: bool = False,
+    nested: int = 0,
     pull_safe: bool = False,
     push_safe: bool = False,
     metadata_only: bool = False,
@@ -168,7 +168,7 @@ def collect_reports_parallel(
             repo_paths: list[Path] = []
             for repo_path in discover_repositories(
                 dirs,
-                include_ignored=include_ignored,
+                nested=nested,
             ):
                 discovered_total += 1
                 if hook:
@@ -214,7 +214,7 @@ def collect_reports_parallel(
             repo_iter = iter(
                 discover_repositories(
                     dirs,
-                    include_ignored=include_ignored,
+                    nested=nested,
                 )
             )
             futures: dict[Future[RepoReport], Path] = {}
@@ -283,108 +283,126 @@ def collect_reports_parallel(
 def discover_repositories(
     roots: Iterable[Path],
     *,
-    include_ignored: bool = False,
+    nested: int = 0,
 ) -> Iterator[Path]:
+    """Find repos up to ``nested`` repo boundaries below each root's first repos."""
+    if nested < 0:
+        raise ValueError("nested must be nonnegative")
+
     seen: set[Path] = set()
-    known_repos: list[Path] = []
-    ignored_directories: set[Path] = set()
-    normalized_roots = [root.resolve() for root in roots]
-    for root in normalized_roots:
+    submodules: set[Path] = set()
+    submodule_paths_cache: dict[Path, set[Path]] = {}
+    submodule_gitdir_cache: dict[Path, bool] = {}
+
+    def submodule_paths(repo_path: Path) -> set[Path]:
+        if repo_path not in submodule_paths_cache:
+            paths = _submodule_paths(repo_path)
+            submodule_paths_cache[repo_path] = paths
+            submodules.update(paths)
+        return submodule_paths_cache[repo_path]
+
+    def is_submodule(repo_path: Path) -> bool:
+        if repo_path not in submodule_gitdir_cache:
+            submodule_gitdir_cache[repo_path] = is_submodule_gitdir(repo_path / ".git")
+        return submodule_gitdir_cache[repo_path]
+
+    for root in roots:
+        root = root.resolve()
         if not root.is_dir():
             continue
+
+        # Ancestors outside the scan root affect submodule exclusion, not depth.
+        excluded = False
+        for ancestor in (root, *root.parents):
+            if not (ancestor / ".git").exists():
+                continue
+            if is_submodule(ancestor) or (
+                ancestor != root
+                and any(root.is_relative_to(path) for path in submodule_paths(ancestor))
+            ):
+                excluded = True
+                break
+        if excluded:
+            continue
+
+        # Keep depth local to this root, even for repos already yielded elsewhere.
+        repo_stack: list[Path] = []
         for dirpath, dirnames, _ in os.walk(root):
             current = Path(dirpath)
+            while repo_stack and not current.is_relative_to(repo_stack[-1]):
+                repo_stack.pop()
+            if current in submodules:
+                dirnames[:] = []
+                continue
             git_dir = current / ".git"
             if git_dir.exists():
-                if is_submodule_gitdir(git_dir):
+                if is_submodule(current):
                     dirnames[:] = []
                     continue
-                resolved = current.resolve()
-                if resolved not in seen:
-                    if not include_ignored and _is_gitignored_by_parent(
-                        resolved,
-                        known_repos,
-                    ):
-                        dirnames[:] = []
-                        continue
-                    seen.add(resolved)
-                    known_repos.append(resolved)
-                    yield resolved
-                    if not include_ignored:
-                        ignored_directories.update(_gitignored_directories(resolved))
-            if ".git" in dirnames:
-                dirnames.remove(".git")
-            if ignored_directories:
-                dirnames[:] = [
-                    name
-                    for name in dirnames
-                    if current / name not in ignored_directories
-                ]
+                if current not in seen:
+                    seen.add(current)
+                    yield current
+                if len(repo_stack) >= nested:
+                    dirnames[:] = []
+                    continue
+                repo_stack.append(current)
+                submodule_paths(current)
+            dirnames[:] = [
+                name for name in dirnames
+                if name != ".git" and current / name not in submodules
+            ]
 
 
-def _gitignored_directories(repo_path: Path) -> set[Path]:
-    """Return ignored directory roots that discovery may safely prune."""
+def _submodule_paths(repo_path: Path) -> set[Path]:
+    """Read declared submodules and indexed gitlinks, including old-style checkouts."""
+    paths: set[Path] = set()
     result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo_path),
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-            "--no-empty-directory",
-            "-z",
-        ],
+        ["git", "-C", str(repo_path), "ls-files", "--stage", "-z"],
         capture_output=True,
     )
-    if result.returncode != 0:
-        return set()
+    if result.returncode == 0:
+        for entry in result.stdout.split(b"\0"):
+            metadata, separator, path = entry.partition(b"\t")
+            if separator and metadata.startswith(b"160000 "):
+                paths.add(repo_path / os.fsdecode(path))
+
+    gitmodules = repo_path / ".gitmodules"
+    if gitmodules.is_file():
+        result = subprocess.run(
+            [
+                "git", "config", "--null", "--file", str(gitmodules),
+                "--get-regexp", r"^submodule\..*\.path$",
+            ],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            for entry in result.stdout.split(b"\0"):
+                _, separator, path = entry.partition(b"\n")
+                if separator and path:
+                    paths.add(repo_path / os.fsdecode(path))
+
+    # Malformed declarations must not exclude directories outside this repo.
     return {
-        repo_path / os.fsdecode(raw_path).removesuffix("/")
-        for raw_path in result.stdout.split(b"\0")
-        if raw_path
+        resolved for path in paths
+        if (resolved := path.resolve()).is_relative_to(repo_path)
+        and resolved != repo_path
     }
 
 
 def is_submodule_gitdir(git_dir: Path) -> bool:
-    if git_dir.is_dir():
+    if not git_dir.is_file():
         return False
     try:
-        content = git_dir.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
+        with Repo(git_dir.parent) as repo:
+            common_dir = Path(repo.common_dir).resolve()
+    except (OSError, InvalidGitRepositoryError, NoSuchPathError):
         return False
-    return "modules" in content
-
-
-def _nearest_parent_repo(path: Path, known_repos: list[Path]) -> Path | None:
-    nearest: Path | None = None
-    nearest_depth = 0
-    for repo in known_repos:
-        if repo == path:
-            continue
-        try:
-            path.relative_to(repo)
-        except ValueError:
-            continue
-        depth = len(repo.parts)
-        if depth > nearest_depth:
-            nearest = repo
-            nearest_depth = depth
-    return nearest
-
-
-def _is_gitignored_by_parent(path: Path, known_repos: list[Path]) -> bool:
-    parent = _nearest_parent_repo(path, known_repos)
-    if parent is None:
-        return False
-    rel = path.relative_to(parent)
-    result = subprocess.run(
-        ["git", "-C", str(parent), "check-ignore", "-q", str(rel)],
-        capture_output=True,
+    return any(
+        parent.name == "modules"
+        and (parent.parent / "HEAD").is_file()
+        and (parent.parent / "objects").is_dir()
+        for parent in common_dir.parents
     )
-    return result.returncode == 0
 
 
 def analyze_repository(
